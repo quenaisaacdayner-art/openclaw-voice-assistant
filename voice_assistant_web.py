@@ -7,6 +7,7 @@ Stack: faster-whisper (STT) + edge-tts (TTS) + OpenClaw Gateway (LLM) + Gradio (
 
 import os
 import json
+import re
 import asyncio
 import tempfile
 import wave
@@ -135,6 +136,42 @@ def ask_openclaw(text, history_messages):
     except (requests.RequestException, KeyError, IndexError) as e:
         return f"❌ Erro: {e}"
 
+
+def ask_openclaw_stream(text, history_messages):
+    """Send text to OpenClaw gateway with streaming (SSE). Yields accumulated text."""
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+    }
+    messages = list(history_messages) + [{"role": "user", "content": text}]
+    body = {"model": MODEL, "messages": messages, "stream": True}
+
+    resp = requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True)
+    resp.raise_for_status()
+
+    full_text = ""
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data: "):
+            continue
+        data_str = line[len("data: "):]
+        if data_str.strip() == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+            content = chunk["choices"][0].get("delta", {}).get("content", "")
+            if content:
+                full_text += content
+                yield full_text
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
+
+
+def _find_sentence_end(text):
+    """Position after the first sentence-ending punctuation followed by whitespace."""
+    m = re.search(r'[.!?…]\s', text)
+    return m.end() if m else 0
+
+
 # ─── TTS ──────────────────────────────────────────────────────────────────────
 
 def generate_tts_piper(text):
@@ -216,54 +253,121 @@ def build_api_history(chat_history):
     return messages[-(MAX_HISTORY * 2):]
 
 def respond_text(user_message, chat_history):
-    """Handle text input."""
+    """Handle text input with streaming response and sentence-based TTS."""
     if not user_message or not user_message.strip():
-        return "", chat_history, None
+        yield "", chat_history, None
+        return
 
     text = user_message.strip()
-
-    # Add user message to chat
     chat_history = chat_history + [{"role": "user", "content": text}]
-
-    # Get response
     api_history = build_api_history(chat_history[:-1])
-    response = ask_openclaw(text, api_history)
 
-    # Add assistant message
-    chat_history = chat_history + [{"role": "assistant", "content": response}]
+    full_response = ""
+    first_tts_done = False
+    first_tts_end = 0
+    audio = None
 
-    # Generate TTS
-    audio_path = generate_tts(response)
+    try:
+        for partial in ask_openclaw_stream(text, api_history):
+            full_response = partial
+            updated = chat_history + [{"role": "assistant", "content": partial}]
 
-    return "", chat_history, audio_path
+            # Generate TTS for first complete sentence (early voice)
+            if not first_tts_done:
+                end = _find_sentence_end(partial)
+                if end > 0:
+                    audio = generate_tts(partial[:end].strip())
+                    if audio:
+                        first_tts_done = True
+                        first_tts_end = end
+                        yield "", updated, audio
+                        continue
+
+            yield "", updated, audio
+
+        # Streaming done
+        if full_response:
+            final = chat_history + [{"role": "assistant", "content": full_response}]
+            # TTS for remaining unspoken text
+            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            if remaining:
+                final_audio = generate_tts(remaining)
+                if final_audio:
+                    audio = final_audio
+            yield "", final, audio
+        else:
+            # Streaming yielded nothing — fallback to non-streaming
+            response = ask_openclaw(text, api_history)
+            final = chat_history + [{"role": "assistant", "content": response}]
+            audio = generate_tts(response)
+            yield "", final, audio
+
+    except Exception:
+        # Fallback: non-streaming
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{"role": "assistant", "content": response}]
+        audio = generate_tts(response)
+        yield "", final, audio
 
 def respond_audio(audio_input, chat_history):
-    """Handle audio input."""
+    """Handle audio input with streaming response and sentence-based TTS."""
     if audio_input is None:
-        return chat_history, None
+        yield chat_history, None
+        return
 
     # Transcribe
     text = transcribe_audio(audio_input)
     if not text:
-        chat_history = chat_history + [
+        yield chat_history + [
             {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
-        ]
-        return chat_history, None
+        ], None
+        return
 
     # Show what was transcribed
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
-
-    # Get response
     api_history = build_api_history(chat_history[:-1])
-    response = ask_openclaw(text, api_history)
 
-    # Add assistant message
-    chat_history = chat_history + [{"role": "assistant", "content": response}]
+    full_response = ""
+    first_tts_done = False
+    first_tts_end = 0
+    audio = None
 
-    # Generate TTS
-    audio_path = generate_tts(response)
+    try:
+        for partial in ask_openclaw_stream(text, api_history):
+            full_response = partial
+            updated = chat_history + [{"role": "assistant", "content": partial}]
 
-    return chat_history, audio_path
+            if not first_tts_done:
+                end = _find_sentence_end(partial)
+                if end > 0:
+                    audio = generate_tts(partial[:end].strip())
+                    if audio:
+                        first_tts_done = True
+                        first_tts_end = end
+                        yield updated, audio
+                        continue
+
+            yield updated, audio
+
+        if full_response:
+            final = chat_history + [{"role": "assistant", "content": full_response}]
+            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            if remaining:
+                final_audio = generate_tts(remaining)
+                if final_audio:
+                    audio = final_audio
+            yield final, audio
+        else:
+            response = ask_openclaw(text, api_history)
+            final = chat_history + [{"role": "assistant", "content": response}]
+            audio = generate_tts(response)
+            yield final, audio
+
+    except Exception:
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{"role": "assistant", "content": response}]
+        audio = generate_tts(response)
+        yield final, audio
 
 # ─── Gradio Interface ────────────────────────────────────────────────────────
 
