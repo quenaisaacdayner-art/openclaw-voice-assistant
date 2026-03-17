@@ -11,6 +11,8 @@ import re
 import asyncio
 import tempfile
 import wave
+import threading
+import queue
 import numpy as np
 import requests
 import gradio as gr
@@ -24,6 +26,13 @@ try:
     PIPER_AVAILABLE = True
 except ImportError:
     PIPER_AVAILABLE = False
+
+# RealtimeSTT (continuous listening with VAD)
+try:
+    from RealtimeSTT import AudioToTextRecorder
+    REALTIME_STT_AVAILABLE = True
+except ImportError:
+    REALTIME_STT_AVAILABLE = False
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -369,6 +378,79 @@ def respond_audio(audio_input, chat_history):
         audio = generate_tts(response)
         yield final, audio
 
+# ─── Continuous Listening (RealtimeSTT) ───────────────────────────────────────
+
+class ContinuousListener:
+    """Manages RealtimeSTT in a background thread for hands-free voice input."""
+
+    def __init__(self):
+        self.recorder = None
+        self.running = False
+        self.thread = None
+        self.text_queue = queue.Queue()
+        self._stop_event = threading.Event()
+
+    def start(self):
+        if not REALTIME_STT_AVAILABLE:
+            return False
+        if self.running:
+            return True
+        self._stop_event.clear()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        return True
+
+    def stop(self):
+        self._stop_event.set()
+        if self.recorder:
+            try:
+                self.recorder.stop()
+            except Exception:
+                pass
+            try:
+                self.recorder.shutdown()
+            except Exception:
+                pass
+        self.running = False
+        self.recorder = None
+
+    def _on_text(self, text):
+        """Called by RealtimeSTT when a complete utterance is detected."""
+        text = text.strip()
+        if text:
+            self.text_queue.put(text)
+
+    def _run(self):
+        try:
+            self.recorder = AudioToTextRecorder(
+                model="small",
+                language="pt",
+                spinner=False,
+                silero_sensitivity=0.4,
+                post_speech_silence_duration=0.6,
+                min_length_of_recording=0.5,
+                on_recording_start=None,
+                on_recording_stop=None,
+            )
+            self.running = True
+            while not self._stop_event.is_set():
+                self.recorder.text(self._on_text)
+        except Exception as e:
+            print(f"⚠️ RealtimeSTT error: {e}")
+        finally:
+            self.running = False
+
+    def get_text(self):
+        """Non-blocking: returns transcribed text or None."""
+        try:
+            return self.text_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+
+continuous_listener = ContinuousListener()
+
+
 # ─── Gradio Interface ────────────────────────────────────────────────────────
 
 CUSTOM_CSS = """
@@ -414,6 +496,21 @@ with gr.Blocks(
             label="🎤 Gravar voz (clique no microfone)",
         )
 
+    # Continuous listening toggle (only if RealtimeSTT is available)
+    if REALTIME_STT_AVAILABLE:
+        with gr.Row():
+            listen_btn = gr.Button(
+                "🎤 Ativar Escuta Contínua",
+                variant="secondary",
+                size="sm",
+            )
+            listen_status = gr.Textbox(
+                value="Escuta contínua: DESLIGADA",
+                label="Status",
+                interactive=False,
+                max_lines=1,
+            )
+
     audio_output = gr.Audio(
         label="🔊 Resposta em voz",
         type="filepath",
@@ -441,6 +538,114 @@ with gr.Blocks(
         outputs=[chatbot, audio_output],
     )
     clear_btn.click(lambda: ([], None), outputs=[chatbot, audio_output])
+
+    # ── Continuous Listening events ──
+    if REALTIME_STT_AVAILABLE:
+        listening_state = gr.State(value=False)
+
+        def toggle_listening(is_on):
+            if is_on:
+                continuous_listener.stop()
+                return (
+                    False,
+                    "🎤 Ativar Escuta Contínua",
+                    "Escuta contínua: DESLIGADA",
+                )
+            else:
+                ok = continuous_listener.start()
+                if ok:
+                    return (
+                        True,
+                        "⏹️ Parar Escuta Contínua",
+                        "Escuta contínua: LIGADA — fale normalmente",
+                    )
+                return (
+                    False,
+                    "🎤 Ativar Escuta Contínua",
+                    "⚠️ Falha ao iniciar escuta contínua",
+                )
+
+        listen_btn.click(
+            toggle_listening,
+            inputs=[listening_state],
+            outputs=[listening_state, listen_btn, listen_status],
+        )
+
+        def poll_continuous(chat_history, is_on):
+            """Check if RealtimeSTT has new text; if so, process it like a voice input."""
+            if not is_on:
+                yield chat_history, None
+                return
+
+            text = continuous_listener.get_text()
+            if not text:
+                yield chat_history, None
+                return
+
+            # Process just like respond_audio but with already-transcribed text
+            chat_history = chat_history + [
+                {"role": "user", "content": f"[🎤 Voz]: {text}"}
+            ]
+            api_history = build_api_history(chat_history[:-1])
+
+            full_response = ""
+            first_tts_done = False
+            first_tts_end = 0
+            audio = None
+
+            try:
+                for partial in ask_openclaw_stream(text, api_history):
+                    full_response = partial
+                    updated = chat_history + [
+                        {"role": "assistant", "content": partial}
+                    ]
+                    if not first_tts_done:
+                        end = _find_sentence_end(partial)
+                        if end > 0:
+                            audio = generate_tts(partial[:end].strip())
+                            if audio:
+                                first_tts_done = True
+                                first_tts_end = end
+                                yield updated, audio
+                                continue
+                    yield updated, audio
+
+                if full_response:
+                    final = chat_history + [
+                        {"role": "assistant", "content": full_response}
+                    ]
+                    remaining = (
+                        full_response[first_tts_end:].strip()
+                        if first_tts_done
+                        else full_response
+                    )
+                    if remaining:
+                        final_audio = generate_tts(remaining)
+                        if final_audio:
+                            audio = final_audio
+                    yield final, audio
+                else:
+                    response = ask_openclaw(text, api_history)
+                    final = chat_history + [
+                        {"role": "assistant", "content": response}
+                    ]
+                    audio = generate_tts(response)
+                    yield final, audio
+            except Exception:
+                response = ask_openclaw(text, api_history)
+                final = chat_history + [
+                    {"role": "assistant", "content": response}
+                ]
+                audio = generate_tts(response)
+                yield final, audio
+
+        # Poll every 1 second using a Timer
+        poll_timer = gr.Timer(value=1)
+        poll_timer.tick(
+            poll_continuous,
+            inputs=[chatbot, listening_state],
+            outputs=[chatbot, audio_output],
+        )
 
 # ─── Launch ───────────────────────────────────────────────────────────────────
 

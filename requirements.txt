@@ -5,3 +5,5 @@ numpy
 requests
 gradio
 scipy
+RealtimeSTT
+PyAudio
