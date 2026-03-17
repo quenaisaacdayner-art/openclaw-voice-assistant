@@ -12,11 +12,19 @@ import wave
 import threading
 import asyncio
 import subprocess
+import tempfile
 import numpy as np
 import sounddevice as sd
 import requests
 from faster_whisper import WhisperModel
 import edge_tts
+
+# Piper TTS (local, higher quality voice)
+try:
+    from piper import PiperVoice
+    PIPER_AVAILABLE = True
+except ImportError:
+    PIPER_AVAILABLE = False
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -28,7 +36,10 @@ TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
 SAMPLE_RATE = 16000
 CHANNELS = 1
-AUDIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resposta.mp3")
+AUDIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resposta.wav")
+AUDIO_FILE_EDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resposta.mp3")
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper" (local) or "edge" (Microsoft)
+PIPER_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "pt_BR-faber-medium.onnx")
 
 # ─── Microphone ───────────────────────────────────────────────────────────────
 
@@ -195,34 +206,73 @@ def ask_openclaw(text, token, history):
 
 # ─── TTS ──────────────────────────────────────────────────────────────────────
 
-def speak(text):
-    """Convert text to speech with edge-tts and play it."""
-    # Truncate very long responses for TTS
-    if len(text) > 1500:
-        text = text[:1500] + "..."
+def speak_piper(text, piper_voice):
+    """Convert text to speech with Piper TTS (local). Returns True on success."""
+    try:
+        audio_bytes = b""
+        last_chunk = None
+        for chunk in piper_voice.synthesize(text):
+            audio_bytes += chunk.audio_int16_bytes
+            last_chunk = chunk
 
+        if not audio_bytes or last_chunk is None:
+            return False
+
+        with wave.open(AUDIO_FILE, "wb") as wf:
+            wf.setnchannels(last_chunk.sample_channels)
+            wf.setsampwidth(last_chunk.sample_width)
+            wf.setframerate(last_chunk.sample_rate)
+            wf.writeframes(audio_bytes)
+
+        if os.path.getsize(AUDIO_FILE) < 100:
+            return False
+
+        play_audio(AUDIO_FILE)
+        return True
+    except Exception as e:
+        print(f"  ⚠️ Piper falhou: {e}")
+        return False
+
+
+def speak_edge(text):
+    """Convert text to speech with Edge TTS (Microsoft online)."""
     async def generate():
         communicate = edge_tts.Communicate(text, TTS_VOICE)
-        await communicate.save(AUDIO_FILE)
-
+        await communicate.save(AUDIO_FILE_EDGE)
     asyncio.run(generate())
 
-    if not os.path.exists(AUDIO_FILE) or os.path.getsize(AUDIO_FILE) < 100:
-        print("  ⚠️ Erro ao gerar áudio")
-        return
+    if not os.path.exists(AUDIO_FILE_EDGE) or os.path.getsize(AUDIO_FILE_EDGE) < 100:
+        return False
 
-    # Play on Windows
+    play_audio(AUDIO_FILE_EDGE)
+    return True
+
+
+def play_audio(filepath):
+    """Play an audio file on the current platform."""
     if sys.platform == "win32":
-        subprocess.Popen(["start", "", AUDIO_FILE], shell=True)
-    # Play on macOS
+        subprocess.Popen(["start", "", filepath], shell=True)
     elif sys.platform == "darwin":
-        subprocess.Popen(["afplay", AUDIO_FILE])
-    # Play on Linux
+        subprocess.Popen(["afplay", filepath])
     else:
         for player in ["mpv", "ffplay", "aplay"]:
             if os.system(f"which {player} > /dev/null 2>&1") == 0:
-                subprocess.Popen([player, "-nodisp", "-autoexit", AUDIO_FILE] if player == "ffplay" else [player, AUDIO_FILE])
+                subprocess.Popen([player, "-nodisp", "-autoexit", filepath] if player == "ffplay" else [player, filepath])
                 break
+
+
+def speak(text, piper_voice=None):
+    """Convert text to speech and play it. Uses Piper (local) or Edge (online)."""
+    if len(text) > 1500:
+        text = text[:1500] + "..."
+
+    if TTS_ENGINE == "piper" and piper_voice is not None:
+        if speak_piper(text, piper_voice):
+            return
+        print("  ⚠️ Piper falhou — fallback pra Edge TTS")
+
+    if not speak_edge(text):
+        print("  ⚠️ Erro ao gerar áudio")
 
 
 # ─── Main Loop ────────────────────────────────────────────────────────────────
@@ -241,6 +291,17 @@ def main():
     # Find microphone
     mic_device, mic_name = find_microphone()
     print(f"✅ Microfone: {mic_name}")
+
+    # Load Piper TTS
+    piper_voice_model = None
+    if TTS_ENGINE == "piper" and PIPER_AVAILABLE and os.path.exists(PIPER_MODEL):
+        print(f"⏳ Carregando Piper TTS ({os.path.basename(PIPER_MODEL)})...")
+        piper_voice_model = PiperVoice.load(PIPER_MODEL)
+        print("✅ Piper TTS pronto (local)")
+    elif TTS_ENGINE == "piper":
+        print("⚠️ Piper indisponível — usando Edge TTS")
+    else:
+        print("✅ Edge TTS (Microsoft online)")
 
     # Load Whisper
     print(f"⏳ Carregando Whisper ({WHISPER_MODEL})...")
@@ -312,7 +373,7 @@ def main():
 
         # Speak response
         print("  🔊 Falando...")
-        speak(resposta)
+        speak(resposta, piper_voice=piper_voice_model)
 
 
 if __name__ == "__main__":

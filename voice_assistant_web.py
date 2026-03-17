@@ -9,12 +9,20 @@ import os
 import json
 import asyncio
 import tempfile
+import wave
 import numpy as np
 import requests
 import gradio as gr
 from faster_whisper import WhisperModel
 import edge_tts
 import scipy.io.wavfile as wavfile
+
+# Piper TTS (local, higher quality voice)
+try:
+    from piper import PiperVoice
+    PIPER_AVAILABLE = True
+except ImportError:
+    PIPER_AVAILABLE = False
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -24,6 +32,8 @@ GATEWAY_URL = os.environ.get(
 MODEL = os.environ.get("OPENCLAW_MODEL", "openclaw:main")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper" (local) or "edge" (Microsoft)
+PIPER_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "pt_BR-faber-medium.onnx")
 
 # ─── Load Token ───────────────────────────────────────────────────────────────
 
@@ -50,6 +60,16 @@ print("✅ Whisper pronto")
 
 TOKEN = load_token()
 print("✅ Token carregado")
+
+# Load Piper voice model
+piper_voice = None
+if TTS_ENGINE == "piper" and PIPER_AVAILABLE and os.path.exists(PIPER_MODEL):
+    print(f"⏳ Carregando Piper TTS ({os.path.basename(PIPER_MODEL)})...")
+    piper_voice = PiperVoice.load(PIPER_MODEL)
+    print("✅ Piper TTS pronto")
+elif TTS_ENGINE == "piper":
+    print("⚠️ Piper indisponível — usando Edge TTS como fallback")
+    TTS_ENGINE = "edge"
 
 # ─── Transcription ────────────────────────────────────────────────────────────
 
@@ -117,20 +137,42 @@ def ask_openclaw(text, history_messages):
 
 # ─── TTS ──────────────────────────────────────────────────────────────────────
 
-def generate_tts(text):
-    """Generate TTS audio, return path to mp3 file."""
-    if not text or text.startswith("❌"):
-        return None
+def generate_tts_piper(text):
+    """Generate TTS with Piper (local, higher quality). Returns path to WAV."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
 
-    # Truncate for TTS
-    tts_text = text[:1500] + "..." if len(text) > 1500 else text
+    try:
+        audio_bytes = b""
+        last_chunk = None
+        for chunk in piper_voice.synthesize(text):
+            audio_bytes += chunk.audio_int16_bytes
+            last_chunk = chunk
 
+        if not audio_bytes or last_chunk is None:
+            return None
+
+        with wave.open(tmp.name, "wb") as wf:
+            wf.setnchannels(last_chunk.sample_channels)
+            wf.setsampwidth(last_chunk.sample_width)
+            wf.setframerate(last_chunk.sample_rate)
+            wf.writeframes(audio_bytes)
+
+        if os.path.getsize(tmp.name) > 100:
+            return tmp.name
+    except Exception:
+        pass
+    return None
+
+
+def generate_tts_edge(text):
+    """Generate TTS with Edge TTS (Microsoft, online). Returns path to MP3."""
     tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     tmp.close()
 
     try:
         async def _gen():
-            communicate = edge_tts.Communicate(tts_text, TTS_VOICE)
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
             await communicate.save(tmp.name)
         asyncio.run(_gen())
 
@@ -139,6 +181,24 @@ def generate_tts(text):
     except Exception:
         pass
     return None
+
+
+def generate_tts(text):
+    """Generate TTS audio. Uses Piper (local) or Edge (online) based on config."""
+    if not text or text.startswith("❌"):
+        return None
+
+    # Truncate for TTS
+    tts_text = text[:1500] + "..." if len(text) > 1500 else text
+
+    if TTS_ENGINE == "piper" and piper_voice is not None:
+        result = generate_tts_piper(tts_text)
+        if result:
+            return result
+        # Fallback to Edge if Piper fails
+        return generate_tts_edge(tts_text)
+    else:
+        return generate_tts_edge(tts_text)
 
 # ─── Chat Logic ───────────────────────────────────────────────────────────────
 
