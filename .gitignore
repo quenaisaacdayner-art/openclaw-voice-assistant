@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Audio files
+resposta.mp3
+*.wav
+diagnostico_*.wav
+
+# Whisper models (downloaded on first run)
+whisper_models/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GSD (development only)
+.gsd/
+
+# Diagnostics
+diagnostico.py
