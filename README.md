@@ -10,29 +10,14 @@ Talk to your [OpenClaw](https://github.com/openclaw/openclaw) AI agent using you
 You speak → Whisper transcribes → OpenClaw thinks → Edge TTS speaks back
 ```
 
-Full voice conversation with your AI agent. No API keys needed for speech — Whisper runs on your CPU, Edge TTS is free.
+Full voice conversation with your AI agent through a web interface. No API keys needed for speech — Whisper runs on your CPU, Edge TTS is free.
 
-## Demo
+## Two modes
 
-```
-=======================================================
-  🎤 OpenClaw Voice Assistant
-  Talk to your AI agent using your voice
-=======================================================
-
-✅ Token carregado
-✅ Microfone: Grupo de microfones (Intel® Smart Sound Technology)
-⏳ Carregando Whisper (small)...
-✅ Whisper pronto
-
-🎤 ENTER para falar (ou digite comando):
-  🔴 Gravando... (ENTER para parar)
-  📝 Transcrevendo...
-  Tu: quanto é dois mais dois?
-  🧠 Pensando...
-  🤖 Quatro.
-  🔊 Falando...
-```
+| Mode | Command | Interface |
+|------|---------|-----------|
+| **Web** (recommended) | `python voice_assistant_web.py` | Browser with chat UI, mic button, auto-play voice |
+| **Terminal** | `python voice_assistant.py` | Press Enter to record, type to send text |
 
 ## Stack
 
@@ -41,6 +26,7 @@ Full voice conversation with your AI agent. No API keys needed for speech — Wh
 | **Speech-to-Text** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Free | CPU (local) |
 | **LLM** | [OpenClaw](https://github.com/openclaw/openclaw) Gateway API | Your existing plan | Local/Remote |
 | **Text-to-Speech** | [edge-tts](https://github.com/rany2/edge-tts) (Microsoft) | Free | Cloud (no key) |
+| **UI** | [Gradio](https://gradio.app/) | Free | Local browser |
 
 ## Requirements
 
@@ -59,7 +45,10 @@ cd openclaw-voice-assistant
 # Install dependencies
 pip install -r requirements.txt
 
-# Run
+# Run (web interface)
+python voice_assistant_web.py
+
+# Or run (terminal mode)
 python voice_assistant.py
 ```
 
@@ -109,35 +98,21 @@ All settings are environment variables (optional — defaults work out of the bo
 - `pt-BR-FranciscaNeural` — Female, neutral
 - `pt-BR-ThalitaNeural` — Female, warm
 
-Change with: `set TTS_VOICE=pt-BR-FranciscaNeural` (Windows) or `export TTS_VOICE=...` (Linux/Mac)
-
-## Commands
-
-While running:
-
-| Input | Action |
-|-------|--------|
-| `ENTER` | Start recording |
-| `ENTER` again | Stop recording |
-| Type any text | Send as text (skip recording) |
-| `limpar` / `clear` | Reset conversation history |
-| `sair` / `exit` | Quit |
-
 ## Features
 
+- 🌐 **Web interface** — Chat UI in your browser with mic recording and auto-play voice
 - 🎤 Auto-detects best microphone (prefers built-in over virtual cameras)
-- 🔇 VAD filter — ignores silence, prevents Whisper hallucinations ("e e e e e")
-- 📊 Volume check — warns if mic is too quiet
+- 🔇 VAD filter — ignores silence, prevents Whisper hallucinations
 - 💬 Conversation history — remembers last 10 exchanges
-- 🔊 Cross-platform audio playback (Windows/macOS/Linux)
-- ⌨️ Text fallback — type instead of speaking when you want
+- 🔊 Auto-play voice responses in browser
+- ⌨️ Type or speak — both work seamlessly
 
 ## How it works
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐
 │  Microphone  │────▶│ faster-whisper│────▶│   OpenClaw    │────▶│  edge-tts   │
-│  (record)    │     │  (transcribe) │     │  (think)      │     │  (speak)    │
+│  (browser)   │     │  (transcribe) │     │  (think)      │     │  (speak)    │
 └─────────────┘     └──────────────┘     └──────────────┘     └─────────────┘
      You speak        STT (local)         Your AI agent        TTS (free)
                       ~1-3 sec             ~2-5 sec            ~1-2 sec
@@ -145,23 +120,16 @@ While running:
 
 Total latency: **4-10 seconds** depending on response length and Whisper model.
 
-## Limitations
-
-- Not real-time (press-to-talk, not continuous listening)
-- Whisper `small` struggles with strong accents — use `medium` if needed
-- Edge TTS requires internet connection
-- No streaming — waits for full response before speaking
-
 ## Roadmap
 
-- [ ] Continuous listening with VAD (no button press)
-- [ ] Gradio web interface with chat history
-- [ ] Streaming TTS (speak as response arrives)
-- [ ] Kokoro/Piper TTS for fully offline operation
+- [ ] Continuous listening with VAD (no button press needed)
+- [ ] Kokoro TTS — near-human voice quality, runs local
+- [ ] Streaming responses — speak as text arrives
+- [x] ~~Gradio web interface with chat history~~
 
 ## Built with
 
-This project was built in a single session using [OpenClaw](https://github.com/openclaw/openclaw) as the coding assistant. The AI helped write the code, debug microphone issues, and create this README.
+This project was built in a single session (~2 hours) using [OpenClaw](https://github.com/openclaw/openclaw) as the coding assistant. The AI helped write the code, debug microphone issues, and create this README.
 
 Part of my build-in-public journey: learning AI + coding from scratch and documenting everything — mistakes included.
 
