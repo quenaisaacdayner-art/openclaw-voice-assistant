@@ -64,9 +64,20 @@ def load_token():
 
 # ─── Globals (loaded once at startup) ────────────────────────────────────────
 
-print(f"⏳ Carregando Whisper ({WHISPER_MODEL_SIZE})...")
-whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
-print("✅ Whisper pronto")
+# Whisper loaded lazily on first manual transcription to avoid
+# duplicating the ~460MB model when RealtimeSTT is used instead.
+whisper_model = None
+_whisper_lock = threading.Lock()
+
+def _get_whisper():
+    global whisper_model
+    if whisper_model is None:
+        with _whisper_lock:
+            if whisper_model is None:
+                print(f"⏳ Carregando Whisper ({WHISPER_MODEL_SIZE})...")
+                whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+                print("✅ Whisper pronto")
+    return whisper_model
 
 TOKEN = load_token()
 print("✅ Token carregado")
@@ -105,7 +116,7 @@ def transcribe_audio(audio_input):
     wavfile.write(tmp.name, sr, audio_data)
 
     try:
-        segments, _ = whisper_model.transcribe(
+        segments, _ = _get_whisper().transcribe(
             tmp.name,
             language="pt",
             beam_size=5,
@@ -220,7 +231,12 @@ def generate_tts_edge(text):
         async def _gen():
             communicate = edge_tts.Communicate(text, TTS_VOICE)
             await communicate.save(tmp.name)
-        asyncio.run(_gen())
+
+        # Gradio 6.x runs its own event loop — asyncio.run() would crash.
+        # Run in a fresh thread with its own loop to be safe everywhere.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, _gen()).result(timeout=30)
 
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 100:
             return tmp.name
@@ -229,22 +245,36 @@ def generate_tts_edge(text):
     return None
 
 
+_previous_tts_file = None
+
 def generate_tts(text):
     """Generate TTS audio. Uses Piper (local) or Edge (online) based on config."""
+    global _previous_tts_file
+
     if not text or text.startswith("❌"):
         return None
+
+    # Clean up previous TTS file (Gradio already served it by now)
+    if _previous_tts_file:
+        try:
+            os.unlink(_previous_tts_file)
+        except OSError:
+            pass
 
     # Truncate for TTS
     tts_text = text[:1500] + "..." if len(text) > 1500 else text
 
+    result = None
     if TTS_ENGINE == "piper" and piper_voice is not None:
         result = generate_tts_piper(tts_text)
-        if result:
-            return result
-        # Fallback to Edge if Piper fails
-        return generate_tts_edge(tts_text)
+        if not result:
+            # Fallback to Edge if Piper fails
+            result = generate_tts_edge(tts_text)
     else:
-        return generate_tts_edge(tts_text)
+        result = generate_tts_edge(tts_text)
+
+    _previous_tts_file = result
+    return result
 
 # ─── Chat Logic ───────────────────────────────────────────────────────────────
 
@@ -389,6 +419,7 @@ class ContinuousListener:
         self.thread = None
         self.text_queue = queue.Queue()
         self._stop_event = threading.Event()
+        self.processing = False  # guard against overlapping poll_continuous calls
 
     def start(self):
         if not REALTIME_STT_AVAILABLE:
@@ -550,6 +581,7 @@ with gr.Blocks(
                     False,
                     "🎤 Ativar Escuta Contínua",
                     "Escuta contínua: DESLIGADA",
+                    gr.update(interactive=True, visible=True),
                 )
             else:
                 ok = continuous_listener.start()
@@ -558,22 +590,24 @@ with gr.Blocks(
                         True,
                         "⏹️ Parar Escuta Contínua",
                         "Escuta contínua: LIGADA — fale normalmente",
+                        gr.update(interactive=False, visible=False),
                     )
                 return (
                     False,
                     "🎤 Ativar Escuta Contínua",
                     "⚠️ Falha ao iniciar escuta contínua",
+                    gr.update(interactive=True, visible=True),
                 )
 
         listen_btn.click(
             toggle_listening,
             inputs=[listening_state],
-            outputs=[listening_state, listen_btn, listen_status],
+            outputs=[listening_state, listen_btn, listen_status, audio_input],
         )
 
         def poll_continuous(chat_history, is_on):
             """Check if RealtimeSTT has new text; if so, process it like a voice input."""
-            if not is_on:
+            if not is_on or continuous_listener.processing:
                 yield chat_history, None
                 return
 
@@ -581,6 +615,8 @@ with gr.Blocks(
             if not text:
                 yield chat_history, None
                 return
+
+            continuous_listener.processing = True
 
             # Process just like respond_audio but with already-transcribed text
             chat_history = chat_history + [
@@ -638,6 +674,8 @@ with gr.Blocks(
                 ]
                 audio = generate_tts(response)
                 yield final, audio
+            finally:
+                continuous_listener.processing = False
 
         # Poll every 1 second using a Timer
         poll_timer = gr.Timer(value=1)
