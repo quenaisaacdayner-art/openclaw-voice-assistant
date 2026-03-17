@@ -37,29 +37,52 @@ except ImportError:
 # ─── Microphone Detection (PyAudio — used by RealtimeSTT) ─────────────────────
 
 def find_mic_pyaudio():
-    """Find best microphone index for PyAudio. Returns (index, name) or (None, 'default')."""
+    """Find best microphone index for PyAudio. Returns (index, name) or (None, 'default').
+    
+    Priority:
+    1. Intel Smart Sound (built-in mic array — best quality)
+    2. Realtek HD Audio Mic (built-in analog mic — good fallback)
+    3. Any real mic that isn't a virtual camera
+    4. System default (None = let PyAudio decide)
+    """
     try:
         import pyaudio
         pa = pyaudio.PyAudio()
-        best_idx, best_name = None, "default"
+        realtek_mic = None
+        any_real_mic = None
 
         for i in range(pa.get_device_count()):
             info = pa.get_device_info_by_index(i)
             if info.get("maxInputChannels", 0) <= 0:
                 continue
             name = info.get("name", "")
-            # Priority 1: Intel Smart Sound
-            if "Intel" in name and "Smart Sound" in name:
+
+            # Skip virtual cameras and mixers
+            if any(skip in name for skip in ["Iriun", "Virtual", "Mezcla", "Stereo Mix"]):
+                continue
+
+            # Priority 1: Intel Smart Sound (name may be truncated)
+            if "Intel" in name and ("Smart Sound" in name or "Sma" in name):
                 pa.terminate()
                 return i, name
-            # Priority 2: Real mic (not virtual camera)
-            if best_idx is None and "Iriun" not in name and "Virtual" not in name:
-                if any(kw in name for kw in ["Micrófono", "Microphone", "Microfone", "mic", "Mic"]):
-                    best_idx, best_name = i, name
+
+            # Priority 2: Realtek analog mic
+            if "Realtek" in name and "Mic" in name and realtek_mic is None:
+                realtek_mic = (i, name)
+
+            # Priority 3: Any real mic
+            if any_real_mic is None and any(kw in name.lower() for kw in ["micrófono", "microphone", "microfone", "mic"]):
+                any_real_mic = (i, name)
 
         pa.terminate()
-        return best_idx, best_name
-    except Exception:
+
+        if realtek_mic:
+            return realtek_mic
+        if any_real_mic:
+            return any_real_mic
+        return None, "default (nenhum mic real encontrado)"
+    except Exception as e:
+        print(f"⚠️ Erro detectando mic: {e}")
         return None, "default"
 
 MIC_INDEX, MIC_NAME = find_mic_pyaudio()
@@ -450,16 +473,30 @@ class ContinuousListener:
         self.thread = None
         self.text_queue = queue.Queue()
         self._stop_event = threading.Event()
+        self._ready_event = threading.Event()  # signals that recorder initialized OK
+        self._init_error = None  # stores init error message
         self.processing = False  # guard against overlapping poll_continuous calls
 
     def start(self):
         if not REALTIME_STT_AVAILABLE:
+            print("⚠️ RealtimeSTT não disponível")
             return False
         if self.running:
             return True
+
         self._stop_event.clear()
+        self._ready_event.clear()
+        self._init_error = None
+
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+        # Wait up to 30s for recorder to initialize (it downloads models on first run)
+        ok = self._ready_event.wait(timeout=30)
+        if not ok or self._init_error:
+            print(f"❌ RealtimeSTT falhou ao iniciar: {self._init_error or 'timeout'}")
+            self.stop()
+            return False
         return True
 
     def stop(self):
@@ -485,26 +522,35 @@ class ContinuousListener:
 
     def _run(self):
         try:
-            print(f"🎤 RealtimeSTT iniciando com mic [{MIC_INDEX}] {MIC_NAME}...")
+            mic_idx = MIC_INDEX
+            mic_name = MIC_NAME
+            print(f"🎤 RealtimeSTT iniciando com mic [{mic_idx}] {mic_name}...")
+
             self.recorder = AudioToTextRecorder(
                 model="small",
                 language="pt",
-                input_device_index=MIC_INDEX,
+                input_device_index=mic_idx,
                 spinner=False,
                 silero_sensitivity=0.4,
-                post_speech_silence_duration=0.6,
+                post_speech_silence_duration=0.8,
                 min_length_of_recording=0.5,
                 on_recording_start=lambda: print("🔴 Gravando..."),
                 on_recording_stop=lambda: print("⏹️ Processando fala..."),
             )
-            print("✅ RealtimeSTT pronto — escutando")
+
             self.running = True
+            self._ready_event.set()  # signal success to start()
+            print("✅ RealtimeSTT pronto — escutando")
+
             while not self._stop_event.is_set():
                 self.recorder.text(self._on_text)
+
         except Exception as e:
             import traceback
+            self._init_error = str(e)
             print(f"⚠️ RealtimeSTT error: {e}")
             traceback.print_exc()
+            self._ready_event.set()  # unblock start() even on failure
         finally:
             self.running = False
             print("🔇 RealtimeSTT parou")
