@@ -34,6 +34,37 @@ try:
 except ImportError:
     REALTIME_STT_AVAILABLE = False
 
+# ─── Microphone Detection (PyAudio — used by RealtimeSTT) ─────────────────────
+
+def find_mic_pyaudio():
+    """Find best microphone index for PyAudio. Returns (index, name) or (None, 'default')."""
+    try:
+        import pyaudio
+        pa = pyaudio.PyAudio()
+        best_idx, best_name = None, "default"
+
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) <= 0:
+                continue
+            name = info.get("name", "")
+            # Priority 1: Intel Smart Sound
+            if "Intel" in name and "Smart Sound" in name:
+                pa.terminate()
+                return i, name
+            # Priority 2: Real mic (not virtual camera)
+            if best_idx is None and "Iriun" not in name and "Virtual" not in name:
+                if any(kw in name for kw in ["Micrófono", "Microphone", "Microfone", "mic", "Mic"]):
+                    best_idx, best_name = i, name
+
+        pa.terminate()
+        return best_idx, best_name
+    except Exception:
+        return None, "default"
+
+MIC_INDEX, MIC_NAME = find_mic_pyaudio()
+print(f"🎤 Microfone selecionado: [{MIC_INDEX}] {MIC_NAME}")
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 GATEWAY_URL = os.environ.get(
@@ -449,27 +480,34 @@ class ContinuousListener:
         """Called by RealtimeSTT when a complete utterance is detected."""
         text = text.strip()
         if text:
+            print(f"📝 RealtimeSTT transcreveu: '{text}'")
             self.text_queue.put(text)
 
     def _run(self):
         try:
+            print(f"🎤 RealtimeSTT iniciando com mic [{MIC_INDEX}] {MIC_NAME}...")
             self.recorder = AudioToTextRecorder(
                 model="small",
                 language="pt",
+                input_device_index=MIC_INDEX,
                 spinner=False,
                 silero_sensitivity=0.4,
                 post_speech_silence_duration=0.6,
                 min_length_of_recording=0.5,
-                on_recording_start=None,
-                on_recording_stop=None,
+                on_recording_start=lambda: print("🔴 Gravando..."),
+                on_recording_stop=lambda: print("⏹️ Processando fala..."),
             )
+            print("✅ RealtimeSTT pronto — escutando")
             self.running = True
             while not self._stop_event.is_set():
                 self.recorder.text(self._on_text)
         except Exception as e:
+            import traceback
             print(f"⚠️ RealtimeSTT error: {e}")
+            traceback.print_exc()
         finally:
             self.running = False
+            print("🔇 RealtimeSTT parou")
 
     def get_text(self):
         """Non-blocking: returns transcribed text or None."""
