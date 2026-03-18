@@ -10,6 +10,7 @@ import json
 import re
 import asyncio
 import tempfile
+import time
 import wave
 import threading
 import queue
@@ -19,6 +20,11 @@ import gradio as gr
 from faster_whisper import WhisperModel
 import edge_tts
 import scipy.io.wavfile as wavfile
+
+
+def log_latency(stage, t0, extra=''):
+    elapsed = time.time() - t0
+    print(f'⏱️ [{stage}] {elapsed:.2f}s {extra}')
 
 # Piper TTS (local, higher quality voice)
 try:
@@ -169,7 +175,10 @@ def transcribe_audio(audio_input):
     tmp.close()
     wavfile.write(tmp.name, sr, audio_data)
 
+    audio_duration = len(audio_data) / sr if sr > 0 else 0
+
     try:
+        t0_stt = time.time()
         segments, _ = _get_whisper().transcribe(
             tmp.name,
             language="pt",
@@ -178,6 +187,7 @@ def transcribe_audio(audio_input):
             vad_parameters=dict(min_silence_duration_ms=500),
         )
         text = " ".join(seg.text for seg in segments).strip()
+        log_latency('STT', t0_stt, f'(audio: {audio_duration:.1f}s, {sr}Hz)')
         return text
     except Exception as e:
         return f"[Erro na transcrição: {e}]"
@@ -250,6 +260,7 @@ def _find_sentence_end(text):
 
 def generate_tts_piper(text):
     """Generate TTS with Piper (local, higher quality). Returns path to WAV."""
+    t0_tts = time.time()
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
 
@@ -274,6 +285,7 @@ def generate_tts_piper(text):
             wf.writeframes(audio_bytes)
 
         if os.path.getsize(tmp.name) > 100:
+            log_latency('TTS-PIPER', t0_tts, f'({len(text)} chars)')
             return tmp.name
         try:
             os.unlink(tmp.name)
@@ -290,6 +302,7 @@ def generate_tts_piper(text):
 
 def generate_tts_edge(text):
     """Generate TTS with Edge TTS (Microsoft, online). Returns path to MP3."""
+    t0_tts = time.time()
     tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     tmp.close()
 
@@ -305,6 +318,7 @@ def generate_tts_edge(text):
             pool.submit(asyncio.run, _gen()).result(timeout=30)
 
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 100:
+            log_latency('TTS-EDGE', t0_tts, f'({len(text)} chars)')
             return tmp.name
         try:
             os.unlink(tmp.name)
@@ -375,14 +389,21 @@ def _process_streaming_response(text, chat_history, api_history):
 
     Shared logic for text input, audio input, and continuous listening.
     """
+    t0_stream = time.time()
     full_response = ""
     first_tts_done = False
     first_tts_end = 0
+    first_token_logged = False
     audio = None
 
     try:
         for partial in ask_openclaw_stream(text, api_history):
             full_response = partial
+
+            if not first_token_logged:
+                log_latency('API-TTFT', t0_stream, '(first token)')
+                first_token_logged = True
+
             updated = chat_history + [{"role": "assistant", "content": partial}]
 
             # Generate TTS for first complete sentence (early voice)
@@ -393,6 +414,7 @@ def _process_streaming_response(text, chat_history, api_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
+                        log_latency('API-FIRST-SENTENCE', t0_stream, f'({end} chars)')
                         yield updated, audio
                         continue
 
@@ -400,12 +422,15 @@ def _process_streaming_response(text, chat_history, api_history):
 
         # Streaming done
         if full_response:
+            log_latency('API-COMPLETE', t0_stream, f'({len(full_response)} chars total)')
             final = chat_history + [{"role": "assistant", "content": full_response}]
             # TTS for remaining unspoken text
             remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
             if remaining:
+                t0_tts_final = time.time()
                 final_audio = generate_tts(remaining)
                 if final_audio:
+                    log_latency('TTS-FINAL', t0_tts_final, f'({len(remaining)} chars remaining)')
                     audio = final_audio
             yield final, audio
         else:
@@ -429,12 +454,15 @@ def respond_text(user_message, chat_history):
         yield "", chat_history, None
         return
 
+    t0_e2e = time.time()
     text = user_message.strip()
     chat_history = chat_history + [{"role": "user", "content": text}]
     api_history = build_api_history(chat_history[:-1])
 
     for updated, audio in _process_streaming_response(text, chat_history, api_history):
         yield "", updated, audio
+
+    log_latency('END-TO-END', t0_e2e, '(text input)')
 
 
 def respond_audio(audio_input, chat_history):
@@ -443,8 +471,12 @@ def respond_audio(audio_input, chat_history):
         yield chat_history, None
         return
 
+    t0_e2e = time.time()
+
     # Transcribe
+    t0_stt = time.time()
     text = transcribe_audio(audio_input)
+    stt_elapsed = time.time() - t0_stt
     if not text:
         yield chat_history + [
             {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
@@ -457,6 +489,8 @@ def respond_audio(audio_input, chat_history):
 
     for updated, audio in _process_streaming_response(text, chat_history, api_history):
         yield updated, audio
+
+    log_latency('END-TO-END', t0_e2e, f'(voice input, STT: {stt_elapsed:.2f}s)')
 
 # ─── Continuous Listening (RealtimeSTT) ───────────────────────────────────────
 
@@ -711,6 +745,8 @@ with gr.Blocks(
                     yield chat_history, None
                     return
 
+                t0_poll = time.time()
+
                 # Process just like respond_audio but with already-transcribed text
                 chat_history = chat_history + [
                     {"role": "user", "content": f"[🎤 Voz]: {text}"}
@@ -719,6 +755,8 @@ with gr.Blocks(
 
                 for updated, audio in _process_streaming_response(text, chat_history, api_history):
                     yield updated, audio
+
+                log_latency('END-TO-END', t0_poll, '(continuous listening)')
             finally:
                 continuous_listener.finish_processing()
 
