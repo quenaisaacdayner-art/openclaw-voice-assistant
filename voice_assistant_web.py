@@ -678,32 +678,37 @@ with gr.Blocks(
 
     def toggle_vad(is_on):
         if is_on:
+            # Desligar escuta contínua
             vad_listener.enabled = False
             vad_listener.reset()
             return (
                 False,
                 '🎤 Ativar Escuta Contínua',
                 'Escuta contínua: DESLIGADA',
-                gr.update(visible=False),
+                gr.update(visible=False),   # streaming_mic: esconder
+                gr.update(visible=True),    # audio_input: mostrar de volta
             )
         else:
+            # Ligar escuta contínua
             vad_listener.enabled = True
             vad_listener.reset()
             return (
                 True,
                 '⏹️ Parar Escuta Contínua',
                 'Escuta contínua: LIGADA — fale normalmente',
-                gr.update(visible=True),
+                gr.update(visible=True),    # streaming_mic: mostrar
+                gr.update(visible=False),   # audio_input: esconder (evita conflito encoder)
             )
 
     def handle_stream(audio_chunk, chat_history):
         if audio_chunk is None:
-            yield chat_history, None
+            yield gr.skip(), gr.skip()
             return
 
         text = vad_listener.process_chunk(audio_chunk)
         if text is None:
-            yield chat_history, None
+            # Sem utterance completa — NÃO atualizar UI (evita tic-tic-tic)
+            yield gr.skip(), gr.skip()
             return
 
         t0 = time.time()
@@ -718,7 +723,7 @@ with gr.Blocks(
     listen_btn.click(
         toggle_vad,
         inputs=[listening_state],
-        outputs=[listening_state, listen_btn, listen_status, streaming_mic],
+        outputs=[listening_state, listen_btn, listen_status, streaming_mic, audio_input],
     )
     streaming_mic.stream(
         handle_stream,
