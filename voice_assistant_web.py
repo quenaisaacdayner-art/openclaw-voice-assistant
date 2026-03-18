@@ -110,6 +110,9 @@ class BrowserVADListener:
         self._silence_duration = 0.0
         self._lock = threading.Lock()
         self._processing = False
+        # Buffer pra modo manual (stop_recording)
+        self._manual_buffer = []
+        self._manual_sr = None
 
         try:
             print('⏳ Carregando Silero VAD...')
@@ -615,14 +618,17 @@ with gr.Blocks(
         with gr.Column(scale=1, min_width=100):
             send_btn = gr.Button("Enviar", variant="primary")
 
+    # Um único gr.Audio com streaming=True — funciona em ambos modos (manual + contínuo)
+    # Manual: grava, para → stop_recording transcreve
+    # Contínuo: VAD detecta fim de fala → auto-transcreve enquanto gravação continua
     with gr.Row():
         audio_input = gr.Audio(
             sources=["microphone"],
             type="numpy",
-            label="🎤 Gravar voz (clique no microfone)",
+            label="🎤 Clique para gravar (modo manual) ou ative escuta contínua abaixo",
+            streaming=True,
         )
 
-    # Escuta contínua via browser
     with gr.Row():
         listen_btn = gr.Button(
             '🎤 Ativar Escuta Contínua' if vad_listener.available else '🎤 Escuta Contínua (indisponível)',
@@ -631,18 +637,11 @@ with gr.Blocks(
             interactive=vad_listener.available,
         )
         listen_status = gr.Textbox(
-            value='Escuta contínua: DESLIGADA' if vad_listener.available else 'Silero VAD não disponível',
+            value='Modo manual — grave e solte para transcrever' if vad_listener.available else 'Silero VAD não disponível',
             label='Status',
             interactive=False,
             max_lines=1,
         )
-
-    streaming_mic = gr.Audio(
-        sources=['microphone'],
-        streaming=True,
-        visible=False,
-        label='Escuta Contínua',
-    )
 
     listening_state = gr.State(value=False)
 
@@ -656,7 +655,161 @@ with gr.Blocks(
     with gr.Row():
         clear_btn = gr.Button("🗑️ Limpar conversa", size="sm")
 
-    # Events
+    # ── Toggle escuta contínua ──
+
+    def toggle_vad(is_on):
+        if is_on:
+            # Desligar → volta pro modo manual
+            vad_listener.enabled = False
+            vad_listener.reset()
+            return (
+                False,
+                '🎤 Ativar Escuta Contínua',
+                'Modo manual — grave e solte para transcrever',
+            )
+        else:
+            # Ligar escuta contínua
+            vad_listener.enabled = True
+            vad_listener.reset()
+            return (
+                True,
+                '⏹️ Parar Escuta Contínua',
+                'Escuta contínua LIGADA — clique no mic acima e fale normalmente',
+            )
+
+    listen_btn.click(
+        toggle_vad,
+        inputs=[listening_state],
+        outputs=[listening_state, listen_btn, listen_status],
+    )
+
+    # ── Stream handler: cada chunk de áudio enquanto grava ──
+
+    def handle_stream_chunk(audio_chunk, chat_history):
+        """Modo contínuo: VAD detecta fim de fala → transcreve → responde.
+        Modo manual: acumula chunks (transcrição acontece no stop_recording)."""
+        if audio_chunk is None:
+            return chat_history, None
+
+        sr, data = audio_chunk
+
+        if not vad_listener.enabled:
+            # Modo manual: acumular chunks pro stop_recording handler
+            audio_data = data.copy()
+            if len(audio_data.shape) > 1:
+                audio_data = audio_data.mean(axis=1)
+            if audio_data.dtype in (np.int16, np.int32):
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            # Guardar no vad_listener como buffer temporário
+            vad_listener._manual_buffer.append(audio_data)
+            vad_listener._manual_sr = sr
+            return chat_history, None
+
+        # Modo contínuo: Silero VAD detecta fala/silêncio
+        text = vad_listener.process_chunk(audio_chunk)
+
+        if not text:
+            return chat_history, None
+
+        # Transcrição pronta — processar como input de voz
+        t0 = time.time()
+        print(f'📝 Escuta contínua transcreveu: \'{text}\'')
+        chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
+        api_history = build_api_history(chat_history[:-1])
+
+        # Sem streaming de API aqui (stream handler não suporta generators/yield)
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{'role': 'assistant', 'content': response}]
+        audio = generate_tts(response)
+        log_latency('END-TO-END', t0, '(continuous voice)')
+        return final, audio
+
+    audio_input.stream(
+        handle_stream_chunk,
+        inputs=[audio_input, chatbot],
+        outputs=[chatbot, audio_output],
+    )
+
+    # ── Stop recording: transcreve áudio acumulado no modo manual ──
+
+    def handle_stop_recording(chat_history):
+        """Quando para de gravar no modo manual, transcreve o buffer inteiro."""
+        if vad_listener.enabled:
+            # Modo contínuo: transcrever áudio residual no buffer
+            if vad_listener._is_speaking and vad_listener._audio_buffer:
+                full_audio = torch.cat(vad_listener._audio_buffer)
+                tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                tmp.close()
+                audio_np = (full_audio.numpy() * 32767).astype(np.int16)
+                wavfile.write(tmp.name, 16000, audio_np)
+                segments, _ = _get_whisper().transcribe(
+                    tmp.name, language='pt', beam_size=5,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=500)
+                )
+                text = ' '.join(seg.text for seg in segments).strip()
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+                vad_listener.reset()
+                if text:
+                    chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
+                    api_history = build_api_history(chat_history[:-1])
+                    response = ask_openclaw(text, api_history)
+                    final = chat_history + [{'role': 'assistant', 'content': response}]
+                    audio = generate_tts(response)
+                    return final, audio
+            vad_listener.reset()
+            return chat_history, None
+
+        # Modo manual: transcrever buffer acumulado
+        buf = vad_listener._manual_buffer
+        sr = vad_listener._manual_sr
+        vad_listener._manual_buffer = []
+        vad_listener._manual_sr = None
+
+        if not buf or sr is None:
+            return chat_history, None
+
+        full_audio = np.concatenate(buf)
+        audio_int16 = (full_audio * 32767).astype(np.int16)
+        audio_tuple = (sr, audio_int16)
+        text = transcribe_audio(audio_tuple)
+
+        if not text:
+            return chat_history + [
+                {'role': 'assistant', 'content': '⚠️ Não captei áudio — tenta de novo'}
+            ], None
+
+        chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
+        api_history = build_api_history(chat_history[:-1])
+
+        # Tentar com streaming
+        full_response = ''
+        audio = None
+        try:
+            for partial in ask_openclaw_stream(text, api_history):
+                full_response = partial
+            if full_response:
+                final = chat_history + [{'role': 'assistant', 'content': full_response}]
+                audio = generate_tts(full_response)
+                return final, audio
+        except Exception:
+            pass
+
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{'role': 'assistant', 'content': response}]
+        audio = generate_tts(response)
+        return final, audio
+
+    audio_input.stop_recording(
+        handle_stop_recording,
+        inputs=[chatbot],
+        outputs=[chatbot, audio_output],
+    )
+
+    # ── Eventos de texto ──
     text_input.submit(
         respond_text,
         inputs=[text_input, chatbot],
@@ -667,69 +820,7 @@ with gr.Blocks(
         inputs=[text_input, chatbot],
         outputs=[text_input, chatbot, audio_output],
     )
-    audio_input.stop_recording(
-        respond_audio,
-        inputs=[audio_input, chatbot],
-        outputs=[chatbot, audio_output],
-    )
     clear_btn.click(lambda: ([], None), outputs=[chatbot, audio_output])
-
-    # ── Continuous Listening events (Browser VAD) ──
-
-    def toggle_vad(is_on):
-        if is_on:
-            # Desligar escuta contínua
-            vad_listener.enabled = False
-            vad_listener.reset()
-            return (
-                False,
-                '🎤 Ativar Escuta Contínua',
-                'Escuta contínua: DESLIGADA',
-                gr.update(visible=False),   # streaming_mic: esconder
-                gr.update(visible=True),    # audio_input: mostrar de volta
-            )
-        else:
-            # Ligar escuta contínua
-            vad_listener.enabled = True
-            vad_listener.reset()
-            return (
-                True,
-                '⏹️ Parar Escuta Contínua',
-                'Escuta contínua: LIGADA — fale normalmente',
-                gr.update(visible=True),    # streaming_mic: mostrar
-                gr.update(visible=False),   # audio_input: esconder (evita conflito encoder)
-            )
-
-    def handle_stream(audio_chunk, chat_history):
-        if audio_chunk is None:
-            yield gr.skip(), gr.skip()
-            return
-
-        text = vad_listener.process_chunk(audio_chunk)
-        if text is None:
-            # Sem utterance completa — NÃO atualizar UI (evita tic-tic-tic)
-            yield gr.skip(), gr.skip()
-            return
-
-        t0 = time.time()
-        chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
-        api_history = build_api_history(chat_history[:-1])
-
-        for updated, audio in _process_streaming_response(text, chat_history, api_history):
-            yield updated, audio
-
-        log_latency('END-TO-END', t0, '(continuous voice)')
-
-    listen_btn.click(
-        toggle_vad,
-        inputs=[listening_state],
-        outputs=[listening_state, listen_btn, listen_status, streaming_mic, audio_input],
-    )
-    streaming_mic.stream(
-        handle_stream,
-        inputs=[streaming_mic, chatbot],
-        outputs=[chatbot, audio_output],
-    )
 
 # ─── Launch ───────────────────────────────────────────────────────────────────
 
