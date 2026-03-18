@@ -10,7 +10,7 @@ import json
 import re
 import asyncio
 import tempfile
-import time
+import wave
 import threading
 import queue
 import numpy as np
@@ -19,13 +19,6 @@ import gradio as gr
 from faster_whisper import WhisperModel
 import edge_tts
 import scipy.io.wavfile as wavfile
-import torch
-import torchaudio
-
-
-def log_latency(stage, t0, extra=''):
-    elapsed = time.time() - t0
-    print(f'⏱️ [{stage}] {elapsed:.2f}s {extra}')
 
 # Piper TTS (local, higher quality voice)
 try:
@@ -33,6 +26,67 @@ try:
     PIPER_AVAILABLE = True
 except ImportError:
     PIPER_AVAILABLE = False
+
+# RealtimeSTT (continuous listening with VAD)
+try:
+    from RealtimeSTT import AudioToTextRecorder
+    REALTIME_STT_AVAILABLE = True
+except ImportError:
+    REALTIME_STT_AVAILABLE = False
+
+# ─── Microphone Detection (PyAudio — used by RealtimeSTT) ─────────────────────
+
+def find_mic_pyaudio():
+    """Find best microphone index for PyAudio. Returns (index, name) or (None, 'default').
+    
+    Priority:
+    1. Intel Smart Sound (built-in mic array — best quality)
+    2. Realtek HD Audio Mic (built-in analog mic — good fallback)
+    3. Any real mic that isn't a virtual camera
+    4. System default (None = let PyAudio decide)
+    """
+    try:
+        import pyaudio
+        pa = pyaudio.PyAudio()
+        realtek_mic = None
+        any_real_mic = None
+
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) <= 0:
+                continue
+            name = info.get("name", "")
+
+            # Skip virtual cameras and mixers
+            if any(skip in name for skip in ["Iriun", "Virtual", "Mezcla", "Stereo Mix"]):
+                continue
+
+            # Priority 1: Intel Smart Sound (name may be truncated)
+            if "Intel" in name and ("Smart Sound" in name or "Sma" in name):
+                pa.terminate()
+                return i, name
+
+            # Priority 2: Realtek analog mic
+            if "Realtek" in name and "Mic" in name and realtek_mic is None:
+                realtek_mic = (i, name)
+
+            # Priority 3: Any real mic
+            if any_real_mic is None and any(kw in name.lower() for kw in ["micrófono", "microphone", "microfone", "mic"]):
+                any_real_mic = (i, name)
+
+        pa.terminate()
+
+        if realtek_mic:
+            return realtek_mic
+        if any_real_mic:
+            return any_real_mic
+        return None, "default (nenhum mic real encontrado)"
+    except Exception as e:
+        print(f"⚠️ Erro detectando mic: {e}")
+        return None, "default"
+
+MIC_INDEX, MIC_NAME = find_mic_pyaudio()
+print(f"🎤 Microfone selecionado: [{MIC_INDEX}] {MIC_NAME}")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -92,153 +146,6 @@ elif TTS_ENGINE == "piper":
     print("⚠️ Piper indisponível — usando Edge TTS como fallback")
     TTS_ENGINE = "edge"
 
-# ─── Browser VAD Listener (Silero VAD) ───────────────────────────────────────
-
-class BrowserVADListener:
-    '''Escuta contínua via browser usando Silero VAD. Funciona em VPS sem mic local.'''
-
-    SILENCE_DURATION = 0.8  # segundos de silêncio após fala = fim de utterance
-    MIN_SPEECH_DURATION = 0.3  # segundos mínimo de fala pra considerar
-    SPEECH_THRESHOLD = 0.5  # probabilidade mínima de fala do Silero
-
-    def __init__(self):
-        self.available = False
-        self.enabled = False
-        self._audio_buffer = []
-        self._buffer_duration = 0.0
-        self._is_speaking = False
-        self._silence_duration = 0.0
-        self._lock = threading.Lock()
-        self._processing = False
-        # Buffer pra modo manual (stop_recording)
-        self._manual_buffer = []
-        self._manual_sr = None
-
-        try:
-            print('⏳ Carregando Silero VAD...')
-            self._model, self._utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                trust_repo=True
-            )
-            self.available = True
-            print('✅ Silero VAD pronto')
-        except Exception as e:
-            print(f'⚠️ Silero VAD falhou ao carregar: {e}')
-
-    def reset(self):
-        with self._lock:
-            self._audio_buffer = []
-            self._buffer_duration = 0.0
-            self._is_speaking = False
-            self._silence_duration = 0.0
-            self._processing = False
-            if self.available:
-                self._model.reset_states()
-
-    def process_chunk(self, audio_input):
-        '''Processa chunk de áudio do Gradio streaming. Retorna texto transcrito ou None.'''
-        if not self.available or not self.enabled or audio_input is None:
-            return None
-
-        with self._lock:
-            if self._processing:
-                return None
-
-        sr, audio_data = audio_input
-
-        # Converter pra float32
-        if audio_data.dtype == np.int16:
-            audio_data = audio_data.astype(np.float32) / 32768.0
-        elif audio_data.dtype == np.int32:
-            audio_data = audio_data.astype(np.float32) / 2147483648.0
-        elif audio_data.dtype != np.float32:
-            audio_data = audio_data.astype(np.float32)
-
-        # Mono
-        if len(audio_data.shape) > 1:
-            audio_data = audio_data.mean(axis=1)
-
-        # Resample pra 16kHz se necessário
-        tensor = torch.from_numpy(audio_data)
-        if sr != 16000:
-            tensor = torchaudio.functional.resample(tensor, sr, 16000)
-
-        chunk_duration = len(tensor) / 16000.0
-
-        # Rodar VAD
-        speech_prob = self._model(tensor, 16000).item()
-
-        if speech_prob > self.SPEECH_THRESHOLD:
-            self._is_speaking = True
-            self._silence_duration = 0.0
-            self._audio_buffer.append(tensor)
-            self._buffer_duration += chunk_duration
-        elif self._is_speaking:
-            # Ainda acumula áudio durante silêncio curto (pode ser pausa natural)
-            self._audio_buffer.append(tensor)
-            self._buffer_duration += chunk_duration
-            self._silence_duration += chunk_duration
-
-            if self._silence_duration >= self.SILENCE_DURATION:
-                # Fim de utterance detectado
-                if self._buffer_duration - self._silence_duration >= self.MIN_SPEECH_DURATION:
-                    with self._lock:
-                        self._processing = True
-
-                    try:
-                        t0 = time.time()
-                        # Juntar buffer e transcrever
-                        full_audio = torch.cat(self._audio_buffer)
-
-                        # Salvar como WAV temporário pra Whisper
-                        tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-                        tmp.close()
-                        audio_np = (full_audio.numpy() * 32767).astype(np.int16)
-                        wavfile.write(tmp.name, 16000, audio_np)
-
-                        # Transcrever
-                        segments, _ = _get_whisper().transcribe(
-                            tmp.name, language='pt', beam_size=5,
-                            vad_filter=True,
-                            vad_parameters=dict(min_silence_duration_ms=500)
-                        )
-                        text = ' '.join(seg.text for seg in segments).strip()
-
-                        # Cleanup
-                        try:
-                            os.unlink(tmp.name)
-                        except OSError:
-                            pass
-
-                        log_latency('VAD-STT', t0, f'({self._buffer_duration:.1f}s audio, {len(text)} chars)')
-
-                        # Reset
-                        self._audio_buffer = []
-                        self._buffer_duration = 0.0
-                        self._is_speaking = False
-                        self._silence_duration = 0.0
-                        self._model.reset_states()
-
-                        if text:
-                            print(f'📝 VAD transcreveu: {text}')
-                            return text
-                    finally:
-                        with self._lock:
-                            self._processing = False
-                else:
-                    # Áudio muito curto — descartar (ruído)
-                    self._audio_buffer = []
-                    self._buffer_duration = 0.0
-                    self._is_speaking = False
-                    self._silence_duration = 0.0
-                    self._model.reset_states()
-
-        return None
-
-
-vad_listener = BrowserVADListener()
-
 # ─── Transcription ────────────────────────────────────────────────────────────
 
 def transcribe_audio(audio_input):
@@ -262,10 +169,7 @@ def transcribe_audio(audio_input):
     tmp.close()
     wavfile.write(tmp.name, sr, audio_data)
 
-    audio_duration = len(audio_data) / sr if sr > 0 else 0
-
     try:
-        t0_stt = time.time()
         segments, _ = _get_whisper().transcribe(
             tmp.name,
             language="pt",
@@ -274,7 +178,6 @@ def transcribe_audio(audio_input):
             vad_parameters=dict(min_silence_duration_ms=500),
         )
         text = " ".join(seg.text for seg in segments).strip()
-        log_latency('STT', t0_stt, f'(audio: {audio_duration:.1f}s, {sr}Hz)')
         return text
     except Exception as e:
         return f"[Erro na transcrição: {e}]"
@@ -317,24 +220,24 @@ def ask_openclaw_stream(text, history_messages):
     messages = list(history_messages) + [{"role": "user", "content": text}]
     body = {"model": MODEL, "messages": messages, "stream": True}
 
-    with requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True) as resp:
-        resp.raise_for_status()
+    resp = requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True)
+    resp.raise_for_status()
 
-        full_text = ""
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data: "):
-                continue
-            data_str = line[len("data: "):]
-            if data_str.strip() == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data_str)
-                content = chunk["choices"][0].get("delta", {}).get("content", "")
-                if content:
-                    full_text += content
-                    yield full_text
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
+    full_text = ""
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data: "):
+            continue
+        data_str = line[len("data: "):]
+        if data_str.strip() == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+            content = chunk["choices"][0].get("delta", {}).get("content", "")
+            if content:
+                full_text += content
+                yield full_text
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
 
 
 def _find_sentence_end(text):
@@ -347,7 +250,6 @@ def _find_sentence_end(text):
 
 def generate_tts_piper(text):
     """Generate TTS with Piper (local, higher quality). Returns path to WAV."""
-    t0_tts = time.time()
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
 
@@ -359,13 +261,8 @@ def generate_tts_piper(text):
             last_chunk = chunk
 
         if not audio_bytes or last_chunk is None:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
             return None
 
-        import wave
         with wave.open(tmp.name, "wb") as wf:
             wf.setnchannels(last_chunk.sample_channels)
             wf.setsampwidth(last_chunk.sample_width)
@@ -373,24 +270,14 @@ def generate_tts_piper(text):
             wf.writeframes(audio_bytes)
 
         if os.path.getsize(tmp.name) > 100:
-            log_latency('TTS-PIPER', t0_tts, f'({len(text)} chars)')
             return tmp.name
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-    except Exception as e:
-        print(f"⚠️ Piper TTS error: {e}")
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+    except Exception:
+        pass
     return None
 
 
 def generate_tts_edge(text):
     """Generate TTS with Edge TTS (Microsoft, online). Returns path to MP3."""
-    t0_tts = time.time()
     tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     tmp.close()
 
@@ -406,23 +293,13 @@ def generate_tts_edge(text):
             pool.submit(asyncio.run, _gen()).result(timeout=30)
 
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 100:
-            log_latency('TTS-EDGE', t0_tts, f'({len(text)} chars)')
             return tmp.name
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-    except Exception as e:
-        print(f"⚠️ Edge TTS error: {e}")
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+    except Exception:
+        pass
     return None
 
 
 _previous_tts_file = None
-_tts_file_lock = threading.Lock()
 
 def generate_tts(text):
     """Generate TTS audio. Uses Piper (local) or Edge (online) based on config."""
@@ -432,12 +309,9 @@ def generate_tts(text):
         return None
 
     # Clean up previous TTS file (Gradio already served it by now)
-    with _tts_file_lock:
-        old_file = _previous_tts_file
-        _previous_tts_file = None
-    if old_file:
+    if _previous_tts_file:
         try:
-            os.unlink(old_file)
+            os.unlink(_previous_tts_file)
         except OSError:
             pass
 
@@ -453,8 +327,7 @@ def generate_tts(text):
     else:
         result = generate_tts_edge(tts_text)
 
-    with _tts_file_lock:
-        _previous_tts_file = result
+    _previous_tts_file = result
     return result
 
 # ─── Chat Logic ───────────────────────────────────────────────────────────────
@@ -472,26 +345,24 @@ def build_api_history(chat_history):
     # Keep last N
     return messages[-(MAX_HISTORY * 2):]
 
-def _process_streaming_response(text, chat_history, api_history):
-    """Stream LLM response with sentence-based TTS. Yields (chat_history, audio).
+def respond_text(user_message, chat_history):
+    """Handle text input with streaming response and sentence-based TTS."""
+    if not user_message or not user_message.strip():
+        yield "", chat_history, None
+        return
 
-    Shared logic for text input, audio input, and continuous listening.
-    """
-    t0_stream = time.time()
+    text = user_message.strip()
+    chat_history = chat_history + [{"role": "user", "content": text}]
+    api_history = build_api_history(chat_history[:-1])
+
     full_response = ""
     first_tts_done = False
     first_tts_end = 0
-    first_token_logged = False
     audio = None
 
     try:
         for partial in ask_openclaw_stream(text, api_history):
             full_response = partial
-
-            if not first_token_logged:
-                log_latency('API-TTFT', t0_stream, '(first token)')
-                first_token_logged = True
-
             updated = chat_history + [{"role": "assistant", "content": partial}]
 
             # Generate TTS for first complete sentence (early voice)
@@ -502,56 +373,34 @@ def _process_streaming_response(text, chat_history, api_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
-                        log_latency('API-FIRST-SENTENCE', t0_stream, f'({end} chars)')
-                        yield updated, audio
+                        yield "", updated, audio
                         continue
 
-            yield updated, audio
+            yield "", updated, audio
 
         # Streaming done
         if full_response:
-            log_latency('API-COMPLETE', t0_stream, f'({len(full_response)} chars total)')
             final = chat_history + [{"role": "assistant", "content": full_response}]
             # TTS for remaining unspoken text
             remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
             if remaining:
-                t0_tts_final = time.time()
                 final_audio = generate_tts(remaining)
                 if final_audio:
-                    log_latency('TTS-FINAL', t0_tts_final, f'({len(remaining)} chars remaining)')
                     audio = final_audio
-            yield final, audio
+            yield "", final, audio
         else:
             # Streaming yielded nothing — fallback to non-streaming
             response = ask_openclaw(text, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            yield final, audio
+            yield "", final, audio
 
-    except Exception as e:
-        print(f"⚠️ Streaming failed, falling back to non-streaming: {e}")
+    except Exception:
+        # Fallback: non-streaming
         response = ask_openclaw(text, api_history)
         final = chat_history + [{"role": "assistant", "content": response}]
         audio = generate_tts(response)
-        yield final, audio
-
-
-def respond_text(user_message, chat_history):
-    """Handle text input with streaming response and sentence-based TTS."""
-    if not user_message or not user_message.strip():
-        yield "", chat_history, None
-        return
-
-    t0_e2e = time.time()
-    text = user_message.strip()
-    chat_history = chat_history + [{"role": "user", "content": text}]
-    api_history = build_api_history(chat_history[:-1])
-
-    for updated, audio in _process_streaming_response(text, chat_history, api_history):
-        yield "", updated, audio
-
-    log_latency('END-TO-END', t0_e2e, '(text input)')
-
+        yield "", final, audio
 
 def respond_audio(audio_input, chat_history):
     """Handle audio input with streaming response and sentence-based TTS."""
@@ -559,12 +408,8 @@ def respond_audio(audio_input, chat_history):
         yield chat_history, None
         return
 
-    t0_e2e = time.time()
-
     # Transcribe
-    t0_stt = time.time()
     text = transcribe_audio(audio_input)
-    stt_elapsed = time.time() - t0_stt
     if not text:
         yield chat_history + [
             {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
@@ -575,10 +420,151 @@ def respond_audio(audio_input, chat_history):
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
     api_history = build_api_history(chat_history[:-1])
 
-    for updated, audio in _process_streaming_response(text, chat_history, api_history):
-        yield updated, audio
+    full_response = ""
+    first_tts_done = False
+    first_tts_end = 0
+    audio = None
 
-    log_latency('END-TO-END', t0_e2e, f'(voice input, STT: {stt_elapsed:.2f}s)')
+    try:
+        for partial in ask_openclaw_stream(text, api_history):
+            full_response = partial
+            updated = chat_history + [{"role": "assistant", "content": partial}]
+
+            if not first_tts_done:
+                end = _find_sentence_end(partial)
+                if end > 0:
+                    audio = generate_tts(partial[:end].strip())
+                    if audio:
+                        first_tts_done = True
+                        first_tts_end = end
+                        yield updated, audio
+                        continue
+
+            yield updated, audio
+
+        if full_response:
+            final = chat_history + [{"role": "assistant", "content": full_response}]
+            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            if remaining:
+                final_audio = generate_tts(remaining)
+                if final_audio:
+                    audio = final_audio
+            yield final, audio
+        else:
+            response = ask_openclaw(text, api_history)
+            final = chat_history + [{"role": "assistant", "content": response}]
+            audio = generate_tts(response)
+            yield final, audio
+
+    except Exception:
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{"role": "assistant", "content": response}]
+        audio = generate_tts(response)
+        yield final, audio
+
+# ─── Continuous Listening (RealtimeSTT) ───────────────────────────────────────
+
+class ContinuousListener:
+    """Manages RealtimeSTT in a background thread for hands-free voice input."""
+
+    def __init__(self):
+        self.recorder = None
+        self.running = False
+        self.thread = None
+        self.text_queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._ready_event = threading.Event()  # signals that recorder initialized OK
+        self._init_error = None  # stores init error message
+        self.processing = False  # guard against overlapping poll_continuous calls
+
+    def start(self):
+        if not REALTIME_STT_AVAILABLE:
+            print("⚠️ RealtimeSTT não disponível")
+            return False
+        if self.running:
+            return True
+
+        self._stop_event.clear()
+        self._ready_event.clear()
+        self._init_error = None
+
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+        # Wait up to 30s for recorder to initialize (it downloads models on first run)
+        ok = self._ready_event.wait(timeout=30)
+        if not ok or self._init_error:
+            print(f"❌ RealtimeSTT falhou ao iniciar: {self._init_error or 'timeout'}")
+            self.stop()
+            return False
+        return True
+
+    def stop(self):
+        self._stop_event.set()
+        if self.recorder:
+            try:
+                self.recorder.stop()
+            except Exception:
+                pass
+            try:
+                self.recorder.shutdown()
+            except Exception:
+                pass
+        self.running = False
+        self.recorder = None
+
+    def _on_text(self, text):
+        """Called by RealtimeSTT when a complete utterance is detected."""
+        text = text.strip()
+        if text:
+            print(f"📝 RealtimeSTT transcreveu: '{text}'")
+            self.text_queue.put(text)
+
+    def _run(self):
+        try:
+            mic_idx = MIC_INDEX
+            mic_name = MIC_NAME
+            print(f"🎤 RealtimeSTT iniciando com mic [{mic_idx}] {mic_name}...")
+
+            self.recorder = AudioToTextRecorder(
+                model="small",
+                language="pt",
+                input_device_index=mic_idx,
+                spinner=False,
+                silero_sensitivity=0.4,
+                post_speech_silence_duration=0.8,
+                min_length_of_recording=0.5,
+                on_recording_start=lambda: print("🔴 Gravando..."),
+                on_recording_stop=lambda: print("⏹️ Processando fala..."),
+            )
+
+            self.running = True
+            self._ready_event.set()  # signal success to start()
+            print("✅ RealtimeSTT pronto — escutando")
+
+            while not self._stop_event.is_set():
+                self.recorder.text(self._on_text)
+
+        except Exception as e:
+            import traceback
+            self._init_error = str(e)
+            print(f"⚠️ RealtimeSTT error: {e}")
+            traceback.print_exc()
+            self._ready_event.set()  # unblock start() even on failure
+        finally:
+            self.running = False
+            print("🔇 RealtimeSTT parou")
+
+    def get_text(self):
+        """Non-blocking: returns transcribed text or None."""
+        try:
+            return self.text_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+
+continuous_listener = ContinuousListener()
+
 
 # ─── Gradio Interface ────────────────────────────────────────────────────────
 
@@ -618,32 +604,27 @@ with gr.Blocks(
         with gr.Column(scale=1, min_width=100):
             send_btn = gr.Button("Enviar", variant="primary")
 
-    # Um único gr.Audio com streaming=True — funciona em ambos modos (manual + contínuo)
-    # Manual: grava, para → stop_recording transcreve
-    # Contínuo: VAD detecta fim de fala → auto-transcreve enquanto gravação continua
     with gr.Row():
         audio_input = gr.Audio(
             sources=["microphone"],
             type="numpy",
-            label="🎤 Clique para gravar (modo manual) ou ative escuta contínua abaixo",
-            streaming=True,
+            label="🎤 Gravar voz (clique no microfone)",
         )
 
-    with gr.Row():
-        listen_btn = gr.Button(
-            '🎤 Ativar Escuta Contínua' if vad_listener.available else '🎤 Escuta Contínua (indisponível)',
-            variant='secondary',
-            size='sm',
-            interactive=vad_listener.available,
-        )
-        listen_status = gr.Textbox(
-            value='Modo manual — grave e solte para transcrever' if vad_listener.available else 'Silero VAD não disponível',
-            label='Status',
-            interactive=False,
-            max_lines=1,
-        )
-
-    listening_state = gr.State(value=False)
+    # Continuous listening toggle (only if RealtimeSTT is available)
+    if REALTIME_STT_AVAILABLE:
+        with gr.Row():
+            listen_btn = gr.Button(
+                "🎤 Ativar Escuta Contínua",
+                variant="secondary",
+                size="sm",
+            )
+            listen_status = gr.Textbox(
+                value="Escuta contínua: DESLIGADA",
+                label="Status",
+                interactive=False,
+                max_lines=1,
+            )
 
     audio_output = gr.Audio(
         label="🔊 Resposta em voz",
@@ -655,161 +636,7 @@ with gr.Blocks(
     with gr.Row():
         clear_btn = gr.Button("🗑️ Limpar conversa", size="sm")
 
-    # ── Toggle escuta contínua ──
-
-    def toggle_vad(is_on):
-        if is_on:
-            # Desligar → volta pro modo manual
-            vad_listener.enabled = False
-            vad_listener.reset()
-            return (
-                False,
-                '🎤 Ativar Escuta Contínua',
-                'Modo manual — grave e solte para transcrever',
-            )
-        else:
-            # Ligar escuta contínua
-            vad_listener.enabled = True
-            vad_listener.reset()
-            return (
-                True,
-                '⏹️ Parar Escuta Contínua',
-                'Escuta contínua LIGADA — clique no mic acima e fale normalmente',
-            )
-
-    listen_btn.click(
-        toggle_vad,
-        inputs=[listening_state],
-        outputs=[listening_state, listen_btn, listen_status],
-    )
-
-    # ── Stream handler: cada chunk de áudio enquanto grava ──
-
-    def handle_stream_chunk(audio_chunk, chat_history):
-        """Modo contínuo: VAD detecta fim de fala → transcreve → responde.
-        Modo manual: acumula chunks (transcrição acontece no stop_recording)."""
-        if audio_chunk is None:
-            return chat_history, None
-
-        sr, data = audio_chunk
-
-        if not vad_listener.enabled:
-            # Modo manual: acumular chunks pro stop_recording handler
-            audio_data = data.copy()
-            if len(audio_data.shape) > 1:
-                audio_data = audio_data.mean(axis=1)
-            if audio_data.dtype in (np.int16, np.int32):
-                audio_data = audio_data.astype(np.float32) / 32768.0
-            # Guardar no vad_listener como buffer temporário
-            vad_listener._manual_buffer.append(audio_data)
-            vad_listener._manual_sr = sr
-            return chat_history, None
-
-        # Modo contínuo: Silero VAD detecta fala/silêncio
-        text = vad_listener.process_chunk(audio_chunk)
-
-        if not text:
-            return chat_history, None
-
-        # Transcrição pronta — processar como input de voz
-        t0 = time.time()
-        print(f'📝 Escuta contínua transcreveu: \'{text}\'')
-        chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
-        api_history = build_api_history(chat_history[:-1])
-
-        # Sem streaming de API aqui (stream handler não suporta generators/yield)
-        response = ask_openclaw(text, api_history)
-        final = chat_history + [{'role': 'assistant', 'content': response}]
-        audio = generate_tts(response)
-        log_latency('END-TO-END', t0, '(continuous voice)')
-        return final, audio
-
-    audio_input.stream(
-        handle_stream_chunk,
-        inputs=[audio_input, chatbot],
-        outputs=[chatbot, audio_output],
-    )
-
-    # ── Stop recording: transcreve áudio acumulado no modo manual ──
-
-    def handle_stop_recording(chat_history):
-        """Quando para de gravar no modo manual, transcreve o buffer inteiro."""
-        if vad_listener.enabled:
-            # Modo contínuo: transcrever áudio residual no buffer
-            if vad_listener._is_speaking and vad_listener._audio_buffer:
-                full_audio = torch.cat(vad_listener._audio_buffer)
-                tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-                tmp.close()
-                audio_np = (full_audio.numpy() * 32767).astype(np.int16)
-                wavfile.write(tmp.name, 16000, audio_np)
-                segments, _ = _get_whisper().transcribe(
-                    tmp.name, language='pt', beam_size=5,
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500)
-                )
-                text = ' '.join(seg.text for seg in segments).strip()
-                try:
-                    os.unlink(tmp.name)
-                except OSError:
-                    pass
-                vad_listener.reset()
-                if text:
-                    chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
-                    api_history = build_api_history(chat_history[:-1])
-                    response = ask_openclaw(text, api_history)
-                    final = chat_history + [{'role': 'assistant', 'content': response}]
-                    audio = generate_tts(response)
-                    return final, audio
-            vad_listener.reset()
-            return chat_history, None
-
-        # Modo manual: transcrever buffer acumulado
-        buf = vad_listener._manual_buffer
-        sr = vad_listener._manual_sr
-        vad_listener._manual_buffer = []
-        vad_listener._manual_sr = None
-
-        if not buf or sr is None:
-            return chat_history, None
-
-        full_audio = np.concatenate(buf)
-        audio_int16 = (full_audio * 32767).astype(np.int16)
-        audio_tuple = (sr, audio_int16)
-        text = transcribe_audio(audio_tuple)
-
-        if not text:
-            return chat_history + [
-                {'role': 'assistant', 'content': '⚠️ Não captei áudio — tenta de novo'}
-            ], None
-
-        chat_history = chat_history + [{'role': 'user', 'content': f'[🎤 Voz]: {text}'}]
-        api_history = build_api_history(chat_history[:-1])
-
-        # Tentar com streaming
-        full_response = ''
-        audio = None
-        try:
-            for partial in ask_openclaw_stream(text, api_history):
-                full_response = partial
-            if full_response:
-                final = chat_history + [{'role': 'assistant', 'content': full_response}]
-                audio = generate_tts(full_response)
-                return final, audio
-        except Exception:
-            pass
-
-        response = ask_openclaw(text, api_history)
-        final = chat_history + [{'role': 'assistant', 'content': response}]
-        audio = generate_tts(response)
-        return final, audio
-
-    audio_input.stop_recording(
-        handle_stop_recording,
-        inputs=[chatbot],
-        outputs=[chatbot, audio_output],
-    )
-
-    # ── Eventos de texto ──
+    # Events
     text_input.submit(
         respond_text,
         inputs=[text_input, chatbot],
@@ -820,7 +647,127 @@ with gr.Blocks(
         inputs=[text_input, chatbot],
         outputs=[text_input, chatbot, audio_output],
     )
+    audio_input.stop_recording(
+        respond_audio,
+        inputs=[audio_input, chatbot],
+        outputs=[chatbot, audio_output],
+    )
     clear_btn.click(lambda: ([], None), outputs=[chatbot, audio_output])
+
+    # ── Continuous Listening events ──
+    if REALTIME_STT_AVAILABLE:
+        listening_state = gr.State(value=False)
+
+        def toggle_listening(is_on):
+            if is_on:
+                continuous_listener.stop()
+                return (
+                    False,
+                    "🎤 Ativar Escuta Contínua",
+                    "Escuta contínua: DESLIGADA",
+                    gr.update(interactive=True, visible=True),
+                )
+            else:
+                ok = continuous_listener.start()
+                if ok:
+                    return (
+                        True,
+                        "⏹️ Parar Escuta Contínua",
+                        "Escuta contínua: LIGADA — fale normalmente",
+                        gr.update(interactive=False, visible=False),
+                    )
+                return (
+                    False,
+                    "🎤 Ativar Escuta Contínua",
+                    "⚠️ Falha ao iniciar escuta contínua",
+                    gr.update(interactive=True, visible=True),
+                )
+
+        listen_btn.click(
+            toggle_listening,
+            inputs=[listening_state],
+            outputs=[listening_state, listen_btn, listen_status, audio_input],
+        )
+
+        def poll_continuous(chat_history, is_on):
+            """Check if RealtimeSTT has new text; if so, process it like a voice input."""
+            if not is_on or continuous_listener.processing:
+                yield chat_history, None
+                return
+
+            text = continuous_listener.get_text()
+            if not text:
+                yield chat_history, None
+                return
+
+            continuous_listener.processing = True
+
+            # Process just like respond_audio but with already-transcribed text
+            chat_history = chat_history + [
+                {"role": "user", "content": f"[🎤 Voz]: {text}"}
+            ]
+            api_history = build_api_history(chat_history[:-1])
+
+            full_response = ""
+            first_tts_done = False
+            first_tts_end = 0
+            audio = None
+
+            try:
+                for partial in ask_openclaw_stream(text, api_history):
+                    full_response = partial
+                    updated = chat_history + [
+                        {"role": "assistant", "content": partial}
+                    ]
+                    if not first_tts_done:
+                        end = _find_sentence_end(partial)
+                        if end > 0:
+                            audio = generate_tts(partial[:end].strip())
+                            if audio:
+                                first_tts_done = True
+                                first_tts_end = end
+                                yield updated, audio
+                                continue
+                    yield updated, audio
+
+                if full_response:
+                    final = chat_history + [
+                        {"role": "assistant", "content": full_response}
+                    ]
+                    remaining = (
+                        full_response[first_tts_end:].strip()
+                        if first_tts_done
+                        else full_response
+                    )
+                    if remaining:
+                        final_audio = generate_tts(remaining)
+                        if final_audio:
+                            audio = final_audio
+                    yield final, audio
+                else:
+                    response = ask_openclaw(text, api_history)
+                    final = chat_history + [
+                        {"role": "assistant", "content": response}
+                    ]
+                    audio = generate_tts(response)
+                    yield final, audio
+            except Exception:
+                response = ask_openclaw(text, api_history)
+                final = chat_history + [
+                    {"role": "assistant", "content": response}
+                ]
+                audio = generate_tts(response)
+                yield final, audio
+            finally:
+                continuous_listener.processing = False
+
+        # Poll every 1 second using a Timer
+        poll_timer = gr.Timer(value=1)
+        poll_timer.tick(
+            poll_continuous,
+            inputs=[chatbot, listening_state],
+            outputs=[chatbot, audio_output],
+        )
 
 # ─── Launch ───────────────────────────────────────────────────────────────────
 
