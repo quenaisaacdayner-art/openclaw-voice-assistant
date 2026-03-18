@@ -469,14 +469,18 @@ with gr.Blocks(
         with gr.Column(scale=1, min_width=100):
             send_btn = gr.Button("Enviar", variant="primary")
 
+    # Single streaming Audio component — always visible so browser grants mic access.
+    # Two modes controlled by the toggle:
+    #   Manual (default): user records, stops → full audio transcribed on stop_recording
+    #   Continuous: VAD detects speech end → auto-transcribes while recording continues
     with gr.Row():
         audio_input = gr.Audio(
             sources=["microphone"],
             type="numpy",
-            label="🎤 Gravar voz (clique no microfone)",
+            label="🎤 Clique para gravar (modo manual) ou ative escuta contínua abaixo",
+            streaming=True,
         )
 
-    # Continuous listening section
     with gr.Row():
         listen_btn = gr.Button(
             "🎤 Ativar Escuta Contínua",
@@ -484,20 +488,11 @@ with gr.Blocks(
             size="sm",
         )
         listen_status = gr.Textbox(
-            value="Escuta contínua: DESLIGADA",
+            value="Modo manual — grave e solte para transcrever",
             label="Status",
             interactive=False,
             max_lines=1,
         )
-
-    # Streaming audio input (hidden — used by continuous listening)
-    stream_audio = gr.Audio(
-        sources=["microphone"],
-        type="numpy",
-        label="🎤 Escuta Contínua (fale normalmente)",
-        streaming=True,
-        visible=False,
-    )
 
     audio_output = gr.Audio(
         label="🔊 Resposta em voz",
@@ -512,42 +507,56 @@ with gr.Blocks(
     # ── State ──
     listening_state = gr.State(value=False)
 
-    # ── Continuous listening handlers ──
+    # ── Toggle continuous listening mode ──
 
     def toggle_listening(is_on):
         if is_on:
+            # Turn OFF continuous → back to manual
             continuous_listener.active = False
             continuous_listener.reset()
             return (
                 False,
                 "🎤 Ativar Escuta Contínua",
-                "Escuta contínua: DESLIGADA",
-                gr.update(interactive=True, visible=True),   # audio_input
-                gr.update(visible=False),                     # stream_audio
+                "Modo manual — grave e solte para transcrever",
             )
         else:
+            # Turn ON continuous
             continuous_listener.active = True
             continuous_listener.reset()
             return (
                 True,
                 "⏹️ Parar Escuta Contínua",
-                "Escuta contínua: LIGADA — fale normalmente",
-                gr.update(interactive=False, visible=False),  # audio_input
-                gr.update(visible=True),                      # stream_audio
+                "Escuta contínua LIGADA — clique no mic acima e fale normalmente",
             )
 
     listen_btn.click(
         toggle_listening,
         inputs=[listening_state],
-        outputs=[listening_state, listen_btn, listen_status, audio_input, stream_audio],
+        outputs=[listening_state, listen_btn, listen_status],
     )
 
+    # ── Stream handler: processes each audio chunk while recording ──
+
     def handle_stream_chunk(audio_chunk, chat_history):
-        """Process streaming audio chunk — detect speech end → transcribe → respond."""
-        if audio_chunk is None or not continuous_listener.active:
+        """In continuous mode: feed chunks to VAD → auto-transcribe on speech end.
+        In manual mode: just accumulate (transcription happens on stop_recording)."""
+        if audio_chunk is None:
             return chat_history, None
 
         sr, data = audio_chunk
+
+        if not continuous_listener.active:
+            # Manual mode: accumulate chunks for stop_recording handler
+            continuous_listener.sample_rate = sr
+            audio_data = data.copy()
+            if len(audio_data.shape) > 1:
+                audio_data = audio_data.mean(axis=1)
+            if audio_data.dtype in (np.int16, np.int32):
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            continuous_listener.audio_buffer.append(audio_data)
+            return chat_history, None
+
+        # Continuous mode: VAD-based auto-segmentation
         text = continuous_listener.feed_chunk(sr, data)
 
         if not text:
@@ -563,9 +572,73 @@ with gr.Blocks(
         audio = generate_tts(response)
         return final, audio
 
-    stream_audio.stream(
+    audio_input.stream(
         handle_stream_chunk,
-        inputs=[stream_audio, chatbot],
+        inputs=[audio_input, chatbot],
+        outputs=[chatbot, audio_output],
+    )
+
+    # ── Stop recording handler: processes accumulated audio in manual mode ──
+
+    def handle_stop_recording(chat_history):
+        """When user stops recording in manual mode, transcribe the full buffer."""
+        if continuous_listener.active:
+            # In continuous mode, transcribe any remaining buffered speech
+            if continuous_listener.speech_detected and continuous_listener.audio_buffer:
+                text = continuous_listener._transcribe_buffer()
+                if text:
+                    print(f"📝 Escuta contínua (stop) transcreveu: '{text}'")
+                    chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
+                    api_history = build_api_history(chat_history[:-1])
+                    response = ask_openclaw(text, api_history)
+                    final = chat_history + [{"role": "assistant", "content": response}]
+                    audio = generate_tts(response)
+                    return final, audio
+            continuous_listener.reset()
+            return chat_history, None
+
+        # Manual mode: transcribe full accumulated buffer
+        buf = continuous_listener.audio_buffer
+        sr = continuous_listener.sample_rate
+        continuous_listener.audio_buffer = []
+        continuous_listener.sample_rate = None
+
+        if not buf or sr is None:
+            return chat_history, None
+
+        full_audio = np.concatenate(buf)
+        audio_int16 = (full_audio * 32767).astype(np.int16)
+        audio_tuple = (sr, audio_int16)
+        text = transcribe_audio(audio_tuple)
+
+        if not text:
+            return chat_history + [
+                {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
+            ], None
+
+        chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
+        api_history = build_api_history(chat_history[:-1])
+
+        full_response = ""
+        audio = None
+        try:
+            for partial in ask_openclaw_stream(text, api_history):
+                full_response = partial
+            if full_response:
+                final = chat_history + [{"role": "assistant", "content": full_response}]
+                audio = generate_tts(full_response)
+                return final, audio
+        except Exception:
+            pass
+
+        response = ask_openclaw(text, api_history)
+        final = chat_history + [{"role": "assistant", "content": response}]
+        audio = generate_tts(response)
+        return final, audio
+
+    audio_input.stop_recording(
+        handle_stop_recording,
+        inputs=[chatbot],
         outputs=[chatbot, audio_output],
     )
 
@@ -579,11 +652,6 @@ with gr.Blocks(
         respond_text,
         inputs=[text_input, chatbot],
         outputs=[text_input, chatbot, audio_output],
-    )
-    audio_input.stop_recording(
-        respond_audio,
-        inputs=[audio_input, chatbot],
-        outputs=[chatbot, audio_output],
     )
     clear_btn.click(lambda: ([], None), outputs=[chatbot, audio_output])
 
