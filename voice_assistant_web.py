@@ -220,24 +220,24 @@ def ask_openclaw_stream(text, history_messages):
     messages = list(history_messages) + [{"role": "user", "content": text}]
     body = {"model": MODEL, "messages": messages, "stream": True}
 
-    resp = requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True)
-    resp.raise_for_status()
+    with requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True) as resp:
+        resp.raise_for_status()
 
-    full_text = ""
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
-        data_str = line[len("data: "):]
-        if data_str.strip() == "[DONE]":
-            break
-        try:
-            chunk = json.loads(data_str)
-            content = chunk["choices"][0].get("delta", {}).get("content", "")
-            if content:
-                full_text += content
-                yield full_text
-        except (json.JSONDecodeError, KeyError, IndexError):
-            continue
+        full_text = ""
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[len("data: "):]
+            if data_str.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+                content = chunk["choices"][0].get("delta", {}).get("content", "")
+                if content:
+                    full_text += content
+                    yield full_text
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
 
 
 def _find_sentence_end(text):
@@ -261,6 +261,10 @@ def generate_tts_piper(text):
             last_chunk = chunk
 
         if not audio_bytes or last_chunk is None:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
             return None
 
         with wave.open(tmp.name, "wb") as wf:
@@ -271,8 +275,16 @@ def generate_tts_piper(text):
 
         if os.path.getsize(tmp.name) > 100:
             return tmp.name
-    except Exception:
-        pass
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"⚠️ Piper TTS error: {e}")
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
     return None
 
 
@@ -294,12 +306,21 @@ def generate_tts_edge(text):
 
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 100:
             return tmp.name
-    except Exception:
-        pass
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    except Exception as e:
+        print(f"⚠️ Edge TTS error: {e}")
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
     return None
 
 
 _previous_tts_file = None
+_tts_file_lock = threading.Lock()
 
 def generate_tts(text):
     """Generate TTS audio. Uses Piper (local) or Edge (online) based on config."""
@@ -309,9 +330,12 @@ def generate_tts(text):
         return None
 
     # Clean up previous TTS file (Gradio already served it by now)
-    if _previous_tts_file:
+    with _tts_file_lock:
+        old_file = _previous_tts_file
+        _previous_tts_file = None
+    if old_file:
         try:
-            os.unlink(_previous_tts_file)
+            os.unlink(old_file)
         except OSError:
             pass
 
@@ -327,7 +351,8 @@ def generate_tts(text):
     else:
         result = generate_tts_edge(tts_text)
 
-    _previous_tts_file = result
+    with _tts_file_lock:
+        _previous_tts_file = result
     return result
 
 # ─── Chat Logic ───────────────────────────────────────────────────────────────
@@ -345,16 +370,11 @@ def build_api_history(chat_history):
     # Keep last N
     return messages[-(MAX_HISTORY * 2):]
 
-def respond_text(user_message, chat_history):
-    """Handle text input with streaming response and sentence-based TTS."""
-    if not user_message or not user_message.strip():
-        yield "", chat_history, None
-        return
+def _process_streaming_response(text, chat_history, api_history):
+    """Stream LLM response with sentence-based TTS. Yields (chat_history, audio).
 
-    text = user_message.strip()
-    chat_history = chat_history + [{"role": "user", "content": text}]
-    api_history = build_api_history(chat_history[:-1])
-
+    Shared logic for text input, audio input, and continuous listening.
+    """
     full_response = ""
     first_tts_done = False
     first_tts_end = 0
@@ -373,10 +393,10 @@ def respond_text(user_message, chat_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
-                        yield "", updated, audio
+                        yield updated, audio
                         continue
 
-            yield "", updated, audio
+            yield updated, audio
 
         # Streaming done
         if full_response:
@@ -387,20 +407,35 @@ def respond_text(user_message, chat_history):
                 final_audio = generate_tts(remaining)
                 if final_audio:
                     audio = final_audio
-            yield "", final, audio
+            yield final, audio
         else:
             # Streaming yielded nothing — fallback to non-streaming
             response = ask_openclaw(text, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            yield "", final, audio
+            yield final, audio
 
-    except Exception:
-        # Fallback: non-streaming
+    except Exception as e:
+        print(f"⚠️ Streaming failed, falling back to non-streaming: {e}")
         response = ask_openclaw(text, api_history)
         final = chat_history + [{"role": "assistant", "content": response}]
         audio = generate_tts(response)
-        yield "", final, audio
+        yield final, audio
+
+
+def respond_text(user_message, chat_history):
+    """Handle text input with streaming response and sentence-based TTS."""
+    if not user_message or not user_message.strip():
+        yield "", chat_history, None
+        return
+
+    text = user_message.strip()
+    chat_history = chat_history + [{"role": "user", "content": text}]
+    api_history = build_api_history(chat_history[:-1])
+
+    for updated, audio in _process_streaming_response(text, chat_history, api_history):
+        yield "", updated, audio
+
 
 def respond_audio(audio_input, chat_history):
     """Handle audio input with streaming response and sentence-based TTS."""
@@ -420,47 +455,8 @@ def respond_audio(audio_input, chat_history):
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
     api_history = build_api_history(chat_history[:-1])
 
-    full_response = ""
-    first_tts_done = False
-    first_tts_end = 0
-    audio = None
-
-    try:
-        for partial in ask_openclaw_stream(text, api_history):
-            full_response = partial
-            updated = chat_history + [{"role": "assistant", "content": partial}]
-
-            if not first_tts_done:
-                end = _find_sentence_end(partial)
-                if end > 0:
-                    audio = generate_tts(partial[:end].strip())
-                    if audio:
-                        first_tts_done = True
-                        first_tts_end = end
-                        yield updated, audio
-                        continue
-
-            yield updated, audio
-
-        if full_response:
-            final = chat_history + [{"role": "assistant", "content": full_response}]
-            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
-            if remaining:
-                final_audio = generate_tts(remaining)
-                if final_audio:
-                    audio = final_audio
-            yield final, audio
-        else:
-            response = ask_openclaw(text, api_history)
-            final = chat_history + [{"role": "assistant", "content": response}]
-            audio = generate_tts(response)
-            yield final, audio
-
-    except Exception:
-        response = ask_openclaw(text, api_history)
-        final = chat_history + [{"role": "assistant", "content": response}]
-        audio = generate_tts(response)
-        yield final, audio
+    for updated, audio in _process_streaming_response(text, chat_history, api_history):
+        yield updated, audio
 
 # ─── Continuous Listening (RealtimeSTT) ───────────────────────────────────────
 
@@ -475,7 +471,21 @@ class ContinuousListener:
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()  # signals that recorder initialized OK
         self._init_error = None  # stores init error message
-        self.processing = False  # guard against overlapping poll_continuous calls
+        self._processing = False  # guard against overlapping poll_continuous calls
+        self._processing_lock = threading.Lock()
+
+    def try_start_processing(self):
+        """Atomically check-and-set processing flag. Returns True if acquired."""
+        with self._processing_lock:
+            if self._processing:
+                return False
+            self._processing = True
+            return True
+
+    def finish_processing(self):
+        """Release processing flag."""
+        with self._processing_lock:
+            self._processing = False
 
     def start(self):
         if not REALTIME_STT_AVAILABLE:
@@ -691,75 +701,26 @@ with gr.Blocks(
 
         def poll_continuous(chat_history, is_on):
             """Check if RealtimeSTT has new text; if so, process it like a voice input."""
-            if not is_on or continuous_listener.processing:
+            if not is_on or not continuous_listener.try_start_processing():
                 yield chat_history, None
                 return
-
-            text = continuous_listener.get_text()
-            if not text:
-                yield chat_history, None
-                return
-
-            continuous_listener.processing = True
-
-            # Process just like respond_audio but with already-transcribed text
-            chat_history = chat_history + [
-                {"role": "user", "content": f"[🎤 Voz]: {text}"}
-            ]
-            api_history = build_api_history(chat_history[:-1])
-
-            full_response = ""
-            first_tts_done = False
-            first_tts_end = 0
-            audio = None
 
             try:
-                for partial in ask_openclaw_stream(text, api_history):
-                    full_response = partial
-                    updated = chat_history + [
-                        {"role": "assistant", "content": partial}
-                    ]
-                    if not first_tts_done:
-                        end = _find_sentence_end(partial)
-                        if end > 0:
-                            audio = generate_tts(partial[:end].strip())
-                            if audio:
-                                first_tts_done = True
-                                first_tts_end = end
-                                yield updated, audio
-                                continue
-                    yield updated, audio
+                text = continuous_listener.get_text()
+                if not text:
+                    yield chat_history, None
+                    return
 
-                if full_response:
-                    final = chat_history + [
-                        {"role": "assistant", "content": full_response}
-                    ]
-                    remaining = (
-                        full_response[first_tts_end:].strip()
-                        if first_tts_done
-                        else full_response
-                    )
-                    if remaining:
-                        final_audio = generate_tts(remaining)
-                        if final_audio:
-                            audio = final_audio
-                    yield final, audio
-                else:
-                    response = ask_openclaw(text, api_history)
-                    final = chat_history + [
-                        {"role": "assistant", "content": response}
-                    ]
-                    audio = generate_tts(response)
-                    yield final, audio
-            except Exception:
-                response = ask_openclaw(text, api_history)
-                final = chat_history + [
-                    {"role": "assistant", "content": response}
+                # Process just like respond_audio but with already-transcribed text
+                chat_history = chat_history + [
+                    {"role": "user", "content": f"[🎤 Voz]: {text}"}
                 ]
-                audio = generate_tts(response)
-                yield final, audio
+                api_history = build_api_history(chat_history[:-1])
+
+                for updated, audio in _process_streaming_response(text, chat_history, api_history):
+                    yield updated, audio
             finally:
-                continuous_listener.processing = False
+                continuous_listener.finish_processing()
 
         # Poll every 1 second using a Timer
         poll_timer = gr.Timer(value=1)
