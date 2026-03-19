@@ -262,7 +262,7 @@ class TestToggleListening:
         original_active = listener.active
 
         result = mod.toggle_listening(False)
-        is_on, btn_text, status = result
+        is_on, btn_text, status, status_html = result
 
         assert is_on is True
         assert "Parar" in btn_text
@@ -280,7 +280,7 @@ class TestToggleListening:
         listener.active = True
 
         result = mod.toggle_listening(True)
-        is_on, btn_text, status = result
+        is_on, btn_text, status, status_html = result
 
         assert is_on is False
         assert "Ativar" in btn_text
@@ -297,9 +297,9 @@ class TestHandleStreamChunk:
             pytest.skip("handle_stream_chunk not defined (LOCAL mode)")
 
         history = [{"role": "user", "content": "hello"}]
-        result_history, result_audio = mod.handle_stream_chunk(None, history)
-        assert result_history == history
-        assert result_audio is None
+        result = mod.handle_stream_chunk(None, history)
+        assert result[0] == history
+        assert result[1] is None
 
     def test_manual_mode_accumulates_buffer(self):
         mod = _import_app()
@@ -333,8 +333,8 @@ class TestHandleStreamChunk:
         loud = (np.ones(1000, dtype=np.float32) * 0.5).astype(np.float32)
         loud_chunk = (sr, loud)
 
-        result_history, result_audio = mod.handle_stream_chunk(loud_chunk, [])
-        assert result_audio is None
+        result = mod.handle_stream_chunk(loud_chunk, [])
+        assert result[1] is None
 
         listener.active = False
         listener.reset()

@@ -38,9 +38,9 @@ class TestHandleStopRecordingManual:
         listener.sample_rate = None
 
         history = [{"role": "user", "content": "existing"}]
-        result_history, result_audio = mod.handle_stop_recording(history)
-        assert result_history == history
-        assert result_audio is None
+        result = mod.handle_stop_recording(history)
+        assert result[0] == history
+        assert result[1] is None
 
     def test_none_sample_rate_returns_unchanged(self):
         mod = _import_app()
@@ -52,8 +52,8 @@ class TestHandleStopRecordingManual:
         listener.audio_buffer = [np.ones(1000, dtype=np.float32)]
         listener.sample_rate = None
 
-        result_history, result_audio = mod.handle_stop_recording([])
-        assert result_audio is None
+        result = mod.handle_stop_recording([])
+        assert result[1] is None
 
         listener.audio_buffer = []
 
@@ -71,10 +71,10 @@ class TestHandleStopRecordingManual:
             with patch.object(mod, "ask_openclaw_stream") as mock_stream:
                 mock_stream.return_value = iter(["resposta"])
                 with patch.object(mod, "generate_tts", return_value=None):
-                    result_history, _ = mod.handle_stop_recording([])
+                    result = mod.handle_stop_recording([])
 
-        assert any("[🎤 Voz]" in m.get("content", "") for m in result_history)
-        assert any(m["role"] == "assistant" for m in result_history)
+        assert any("[🎤 Voz]" in m.get("content", "") for m in result[0])
+        assert any(m["role"] == "assistant" for m in result[0])
 
     def test_empty_transcription_shows_warning(self):
         mod = _import_app()
@@ -87,10 +87,10 @@ class TestHandleStopRecordingManual:
         listener.audio_buffer = [np.zeros(1000, dtype=np.float32)]
 
         with patch.object(mod, "transcribe_audio", return_value=""):
-            result_history, result_audio = mod.handle_stop_recording([])
+            result = mod.handle_stop_recording([])
 
-        assert any("Não captei" in m.get("content", "") for m in result_history)
-        assert result_audio is None
+        assert any("Não captei" in m.get("content", "") for m in result[0])
+        assert result[1] is None
 
     def test_clears_buffer_after_processing(self):
         mod = _import_app()
@@ -124,7 +124,7 @@ class TestHandleStopRecordingManual:
             with patch.object(mod, "ask_openclaw_stream", side_effect=Exception("fail")):
                 with patch.object(mod, "ask_openclaw", return_value="fallback") as mock_ask:
                     with patch.object(mod, "generate_tts", return_value=None):
-                        result_history, _ = mod.handle_stop_recording([])
+                        result = mod.handle_stop_recording([])
                         mock_ask.assert_called_once()
 
 
@@ -150,9 +150,9 @@ class TestHandleStopRecordingContinuous:
         with patch("core.stt._get_whisper", return_value=mock_model):
             with patch.object(mod, "ask_openclaw", return_value="resp"):
                 with patch.object(mod, "generate_tts", return_value=None):
-                    result_history, _ = mod.handle_stop_recording([])
+                    result = mod.handle_stop_recording([])
 
-        assert any("frase final" in m.get("content", "") for m in result_history)
+        assert any("frase final" in m.get("content", "") for m in result[0])
 
         listener.active = False
         listener.reset()
@@ -167,9 +167,9 @@ class TestHandleStopRecordingContinuous:
         listener.speech_detected = False
         listener.audio_buffer = []
 
-        result_history, result_audio = mod.handle_stop_recording([])
-        assert result_history == []
-        assert result_audio is None
+        result = mod.handle_stop_recording([])
+        assert result[0] == []
+        assert result[1] is None
 
         listener.active = False
 
@@ -188,9 +188,9 @@ class TestHandleStopRecordingContinuous:
         mock_model.transcribe.return_value = ([], None)
 
         with patch("core.stt._get_whisper", return_value=mock_model):
-            result_history, result_audio = mod.handle_stop_recording([])
+            result = mod.handle_stop_recording([])
 
-        assert result_audio is None
+        assert result[1] is None
 
         listener.active = False
         listener.reset()
@@ -382,10 +382,10 @@ class TestHandleStreamChunkExtended:
             with patch.object(mod, "ask_openclaw", return_value="resposta"):
                 with patch.object(mod, "generate_tts", return_value="/tmp/audio.mp3"):
                     data = np.ones(1000, dtype=np.float32)
-                    result_history, result_audio = mod.handle_stream_chunk((48000, data), [])
+                    result = mod.handle_stream_chunk((48000, data), [])
 
-        assert any("frase detectada" in m.get("content", "") for m in result_history)
-        assert result_audio == "/tmp/audio.mp3"
+        assert any("frase detectada" in m.get("content", "") for m in result[0])
+        assert result[1] == "/tmp/audio.mp3"
 
         listener.active = False
         listener.reset()

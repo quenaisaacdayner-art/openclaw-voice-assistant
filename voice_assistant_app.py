@@ -57,6 +57,22 @@ init_piper()
 SERVER_HOST = os.environ.get("SERVER_HOST", "127.0.0.1")
 SERVER_PORT = int(os.environ.get("PORT", 7860))
 
+# ─── Status Indicators ───────────────────────────────────────────────────────
+
+def _status_html(emoji, label, color):
+    return (
+        f'<div style="text-align:center;padding:10px 16px;border-radius:10px;'
+        f'font-size:1.15em;font-weight:600;color:{color};'
+        f'background:color-mix(in srgb, {color} 12%, transparent);'
+        f'border:1px solid color-mix(in srgb, {color} 25%, transparent)">'
+        f'{emoji} {label}</div>'
+    )
+
+STATUS_IDLE = _status_html("⏸️", "Pronto", "#6b7280")
+STATUS_LISTENING = _status_html("🔴", "Escutando...", "#e53e3e")
+STATUS_THINKING = _status_html("🧠", "Pensando...", "#d69e2e")
+STATUS_SPEAKING = _status_html("🔊", "Falando...", "#38a169")
+
 # ─── Microphone Detection (LOCAL mode only) ───────────────────────────────────
 
 MIC_INDEX = None
@@ -119,6 +135,7 @@ class ContinuousListener:
         self._ready_event = threading.Event()
         self._init_error = None
         self.processing = False
+        self.partial_text = ""
 
     def start(self):
         if MODE != "LOCAL":
@@ -154,12 +171,17 @@ class ContinuousListener:
                 pass
         self.running = False
         self.recorder = None
+        self.partial_text = ""
 
     def _on_text(self, text):
         text = text.strip()
         if text:
             print(f"📝 RealtimeSTT transcreveu: '{text}'")
+            self.partial_text = ""
             self.text_queue.put(text)
+
+    def _on_partial_text(self, text):
+        self.partial_text = text.strip() if text else ""
 
     def _run(self):
         try:
@@ -175,6 +197,7 @@ class ContinuousListener:
                 min_length_of_recording=0.5,
                 on_recording_start=lambda: print("🔴 Gravando..."),
                 on_recording_stop=lambda: print("⏹️ Processando fala..."),
+                on_realtime_transcription_update=self._on_partial_text,
             )
 
             self.running = True
@@ -287,7 +310,7 @@ else:
 def respond_text(user_message, chat_history):
     """Handle text input with streaming response and sentence-based TTS."""
     if not user_message or not user_message.strip():
-        yield "", chat_history, None
+        yield "", chat_history, None, STATUS_IDLE
         return
 
     text = user_message.strip()
@@ -299,6 +322,8 @@ def respond_text(user_message, chat_history):
     first_tts_end = 0
     audio = None
 
+    yield "", chat_history, None, STATUS_THINKING
+
     try:
         for partial in ask_openclaw_stream(text, TOKEN, api_history):
             full_response = partial
@@ -311,10 +336,10 @@ def respond_text(user_message, chat_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
-                        yield "", updated, audio
+                        yield "", updated, audio, STATUS_SPEAKING
                         continue
 
-            yield "", updated, audio
+            yield "", updated, audio, STATUS_THINKING
 
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
@@ -323,31 +348,33 @@ def respond_text(user_message, chat_history):
                 final_audio = generate_tts(remaining)
                 if final_audio:
                     audio = final_audio
-            yield "", final, audio
+            yield "", final, audio, STATUS_IDLE
         else:
             response = ask_openclaw(text, TOKEN, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            yield "", final, audio
+            yield "", final, audio, STATUS_IDLE
 
     except Exception:
         response = ask_openclaw(text, TOKEN, api_history)
         final = chat_history + [{"role": "assistant", "content": response}]
         audio = generate_tts(response)
-        yield "", final, audio
+        yield "", final, audio, STATUS_IDLE
 
 
 def respond_audio(audio_input, chat_history):
     """Handle audio input with streaming response and sentence-based TTS."""
     if audio_input is None:
-        yield chat_history, None
+        yield chat_history, None, STATUS_IDLE
         return
+
+    yield chat_history, None, STATUS_THINKING
 
     text = transcribe_audio(audio_input)
     if not text:
         yield chat_history + [
             {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
-        ], None
+        ], None, STATUS_IDLE
         return
 
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
@@ -370,10 +397,10 @@ def respond_audio(audio_input, chat_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
-                        yield updated, audio
+                        yield updated, audio, STATUS_SPEAKING
                         continue
 
-            yield updated, audio
+            yield updated, audio, STATUS_THINKING
 
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
@@ -382,22 +409,22 @@ def respond_audio(audio_input, chat_history):
                 final_audio = generate_tts(remaining)
                 if final_audio:
                     audio = final_audio
-            yield final, audio
+            yield final, audio, STATUS_IDLE
         else:
             response = ask_openclaw(text, TOKEN, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            yield final, audio
+            yield final, audio, STATUS_IDLE
 
     except Exception:
         response = ask_openclaw(text, TOKEN, api_history)
         final = chat_history + [{"role": "assistant", "content": response}]
         audio = generate_tts(response)
-        yield final, audio
+        yield final, audio, STATUS_IDLE
 
 
 def _process_voice_text(text, chat_history):
-    """Process already-transcribed voice text through LLM + TTS. Yields (chat_history, audio)."""
+    """Process already-transcribed voice text through LLM + TTS. Yields (chat_history, audio, status)."""
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
     api_history = build_api_history(chat_history[:-1])
 
@@ -418,10 +445,10 @@ def _process_voice_text(text, chat_history):
                     if audio:
                         first_tts_done = True
                         first_tts_end = end
-                        yield updated, audio
+                        yield updated, audio, STATUS_SPEAKING
                         continue
 
-            yield updated, audio
+            yield updated, audio, STATUS_THINKING
 
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
@@ -430,18 +457,18 @@ def _process_voice_text(text, chat_history):
                 final_audio = generate_tts(remaining)
                 if final_audio:
                     audio = final_audio
-            yield final, audio
+            yield final, audio, STATUS_IDLE
         else:
             response = ask_openclaw(text, TOKEN, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            yield final, audio
+            yield final, audio, STATUS_IDLE
 
     except Exception:
         response = ask_openclaw(text, TOKEN, api_history)
         final = chat_history + [{"role": "assistant", "content": response}]
         audio = generate_tts(response)
-        yield final, audio
+        yield final, audio, STATUS_IDLE
 
 
 # ─── Gradio Interface ────────────────────────────────────────────────────────
@@ -450,6 +477,24 @@ CUSTOM_CSS = """
 #chatbot { min-height: 500px; }
 .contain { max-width: 900px; margin: auto; }
 footer { display: none !important; }
+
+/* Mobile-friendly */
+@media (max-width: 768px) {
+    #chatbot { min-height: 300px; }
+    .contain { padding: 8px !important; }
+    .gr-button { min-height: 44px !important; font-size: 16px !important; }
+    .gr-textbox textarea { font-size: 16px !important; }
+    #send-btn { min-width: 80px !important; }
+}
+"""
+
+# Force dark mode on load
+DARK_JS = """
+() => {
+    if (!document.body.classList.contains('dark')) {
+        document.body.classList.add('dark');
+    }
+}
 """
 
 with gr.Blocks(
@@ -460,10 +505,10 @@ with gr.Blocks(
         """
         # 🎤 OpenClaw Voice Assistant
         **Fale ou digite** — conectado ao seu agente OpenClaw com memória e skills.
-
-        *Stack: faster-whisper (STT) + Piper/Edge TTS + OpenClaw Gateway (LLM) + Gradio (UI)*
         """
     )
+
+    status_indicator = gr.HTML(value=STATUS_IDLE)
 
     chatbot = gr.Chatbot(
         elem_id="chatbot",
@@ -480,7 +525,7 @@ with gr.Blocks(
                 scale=4,
             )
         with gr.Column(scale=1, min_width=100):
-            send_btn = gr.Button("Enviar", variant="primary")
+            send_btn = gr.Button("Enviar", variant="primary", elem_id="send-btn")
 
     with gr.Row():
         audio_input = gr.Audio(
@@ -503,6 +548,14 @@ with gr.Blocks(
             max_lines=1,
         )
 
+    partial_text_display = gr.Textbox(
+        value="",
+        label="🗣️ Transcrição parcial",
+        interactive=False,
+        visible=(MODE == "LOCAL"),
+        max_lines=2,
+    )
+
     audio_output = gr.Audio(
         label="🔊 Resposta em voz",
         type="filepath",
@@ -520,14 +573,17 @@ with gr.Blocks(
     text_input.submit(
         respond_text,
         inputs=[text_input, chatbot],
-        outputs=[text_input, chatbot, audio_output],
+        outputs=[text_input, chatbot, audio_output, status_indicator],
     )
     send_btn.click(
         respond_text,
         inputs=[text_input, chatbot],
-        outputs=[text_input, chatbot, audio_output],
+        outputs=[text_input, chatbot, audio_output, status_indicator],
     )
-    clear_btn.click(lambda: ([], None), outputs=[chatbot, audio_output])
+    clear_btn.click(
+        lambda: ([], None, STATUS_IDLE),
+        outputs=[chatbot, audio_output, status_indicator],
+    )
 
     # ── Mode-specific events ──
 
@@ -536,7 +592,7 @@ with gr.Blocks(
         audio_input.stop_recording(
             respond_audio,
             inputs=[audio_input, chatbot],
-            outputs=[chatbot, audio_output],
+            outputs=[chatbot, audio_output, status_indicator],
         )
 
         def toggle_listening(is_on):
@@ -547,6 +603,8 @@ with gr.Blocks(
                     "🎤 Ativar Escuta Contínua",
                     "Escuta contínua: DESLIGADA",
                     gr.update(interactive=True, visible=True),
+                    STATUS_IDLE,
+                    gr.update(visible=False),
                 )
             else:
                 ok = continuous_listener.start()
@@ -556,35 +614,43 @@ with gr.Blocks(
                         "⏹️ Parar Escuta Contínua",
                         "Escuta contínua: LIGADA — fale normalmente",
                         gr.update(interactive=False, visible=False),
+                        STATUS_LISTENING,
+                        gr.update(visible=True),
                     )
                 return (
                     False,
                     "🎤 Ativar Escuta Contínua",
                     "⚠️ Falha ao iniciar escuta contínua",
                     gr.update(interactive=True, visible=True),
+                    STATUS_IDLE,
+                    gr.update(visible=False),
                 )
 
         listen_btn.click(
             toggle_listening,
             inputs=[listening_state],
-            outputs=[listening_state, listen_btn, listen_status, audio_input],
+            outputs=[listening_state, listen_btn, listen_status, audio_input,
+                     status_indicator, partial_text_display],
         )
 
         def poll_continuous(chat_history, is_on):
             """Check if RealtimeSTT has new text; if so, process it."""
+            partial = continuous_listener.partial_text if is_on else ""
+
             if not is_on or continuous_listener.processing:
-                yield chat_history, None
+                status = STATUS_LISTENING if is_on else STATUS_IDLE
+                yield chat_history, None, status, partial
                 return
 
             text = continuous_listener.get_text()
             if not text:
-                yield chat_history, None
+                yield chat_history, None, STATUS_LISTENING, partial
                 return
 
             continuous_listener.processing = True
             try:
-                for result in _process_voice_text(text, chat_history):
-                    yield result
+                for hist, audio, status in _process_voice_text(text, chat_history):
+                    yield hist, audio, status, ""
             finally:
                 continuous_listener.processing = False
 
@@ -592,7 +658,7 @@ with gr.Blocks(
         poll_timer.tick(
             poll_continuous,
             inputs=[chatbot, listening_state],
-            outputs=[chatbot, audio_output],
+            outputs=[chatbot, audio_output, status_indicator, partial_text_display],
         )
 
     else:
@@ -606,6 +672,7 @@ with gr.Blocks(
                     False,
                     "🎤 Ativar Escuta Contínua",
                     "Modo manual — grave e solte para transcrever",
+                    STATUS_IDLE,
                 )
             else:
                 continuous_listener.active = True
@@ -614,18 +681,19 @@ with gr.Blocks(
                     True,
                     "⏹️ Parar Escuta Contínua",
                     "Escuta contínua LIGADA — clique no mic acima e fale normalmente",
+                    STATUS_LISTENING,
                 )
 
         listen_btn.click(
             toggle_listening,
             inputs=[listening_state],
-            outputs=[listening_state, listen_btn, listen_status],
+            outputs=[listening_state, listen_btn, listen_status, status_indicator],
         )
 
         def handle_stream_chunk(audio_chunk, chat_history):
             """In continuous mode: feed chunks to VAD. In manual mode: accumulate."""
             if audio_chunk is None:
-                return chat_history, None
+                return chat_history, None, gr.skip()
 
             sr, data = audio_chunk
 
@@ -638,13 +706,13 @@ with gr.Blocks(
                 if audio_data.dtype in (np.int16, np.int32):
                     audio_data = audio_data.astype(np.float32) / 32768.0
                 continuous_listener.audio_buffer.append(audio_data)
-                return chat_history, None
+                return chat_history, None, gr.skip()
 
             # Continuous mode: VAD-based auto-segmentation
             text = continuous_listener.feed_chunk(sr, data)
 
             if not text:
-                return chat_history, None
+                return chat_history, None, gr.skip()
 
             print(f"📝 Escuta contínua transcreveu: '{text}'")
             chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
@@ -653,12 +721,12 @@ with gr.Blocks(
             response = ask_openclaw(text, TOKEN, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            return final, audio
+            return final, audio, STATUS_IDLE
 
         audio_input.stream(
             handle_stream_chunk,
             inputs=[audio_input, chatbot],
-            outputs=[chatbot, audio_output],
+            outputs=[chatbot, audio_output, status_indicator],
         )
 
         def handle_stop_recording(chat_history):
@@ -673,9 +741,9 @@ with gr.Blocks(
                         response = ask_openclaw(text, TOKEN, api_history)
                         final = chat_history + [{"role": "assistant", "content": response}]
                         audio = generate_tts(response)
-                        return final, audio
+                        return final, audio, STATUS_IDLE
                 continuous_listener.reset()
-                return chat_history, None
+                return chat_history, None, STATUS_LISTENING
 
             # Manual mode: transcribe full accumulated buffer
             buf = continuous_listener.audio_buffer
@@ -684,7 +752,7 @@ with gr.Blocks(
             continuous_listener.sample_rate = None
 
             if not buf or sr is None:
-                return chat_history, None
+                return chat_history, None, STATUS_IDLE
 
             full_audio = np.concatenate(buf)
             audio_int16 = (full_audio * 32767).astype(np.int16)
@@ -694,7 +762,7 @@ with gr.Blocks(
             if not text:
                 return chat_history + [
                     {"role": "assistant", "content": "⚠️ Não captei áudio — tenta de novo"}
-                ], None
+                ], None, STATUS_IDLE
 
             chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
             api_history = build_api_history(chat_history[:-1])
@@ -707,19 +775,19 @@ with gr.Blocks(
                 if full_response:
                     final = chat_history + [{"role": "assistant", "content": full_response}]
                     audio = generate_tts(full_response)
-                    return final, audio
+                    return final, audio, STATUS_IDLE
             except Exception:
                 pass
 
             response = ask_openclaw(text, TOKEN, api_history)
             final = chat_history + [{"role": "assistant", "content": response}]
             audio = generate_tts(response)
-            return final, audio
+            return final, audio, STATUS_IDLE
 
         audio_input.stop_recording(
             handle_stop_recording,
             inputs=[chatbot],
-            outputs=[chatbot, audio_output],
+            outputs=[chatbot, audio_output, status_indicator],
         )
 
 
@@ -742,4 +810,5 @@ if __name__ == "__main__":
         inbrowser=(MODE == "LOCAL"),
         theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
         css=CUSTOM_CSS,
+        js=DARK_JS,
     )

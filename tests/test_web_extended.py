@@ -147,7 +147,7 @@ class TestToggleListeningWeb:
         listener = mod.continuous_listener
         with patch.object(listener, "start", return_value=True):
             result = mod.toggle_listening(False)
-            is_on, btn, status, audio_update = result
+            is_on, btn, status, audio_update, status_html, partial_vis = result
             assert is_on is True
             assert "Parar" in btn
 
@@ -159,7 +159,7 @@ class TestToggleListeningWeb:
         listener = mod.continuous_listener
         with patch.object(listener, "start", return_value=False):
             result = mod.toggle_listening(False)
-            is_on, btn, status, audio_update = result
+            is_on, btn, status, audio_update, status_html, partial_vis = result
             assert is_on is False
             assert "Falha" in status or "Ativar" in btn
 
@@ -171,7 +171,7 @@ class TestToggleListeningWeb:
         listener = mod.continuous_listener
         with patch.object(listener, "stop") as mock_stop:
             result = mod.toggle_listening(True)
-            is_on, btn, status, audio_update = result
+            is_on, btn, status, audio_update, status_html, partial_vis = result
             assert is_on is False
             mock_stop.assert_called_once()
 
@@ -187,7 +187,9 @@ class TestPollContinuous:
         history = [{"role": "user", "content": "hi"}]
         results = list(mod.poll_continuous(history, False))
         assert len(results) >= 1
-        assert results[-1] == (history, None)
+        last = results[-1]
+        assert last[0] == history
+        assert last[1] is None
 
     def test_returns_unchanged_when_processing(self):
         mod = _import_app()
@@ -196,7 +198,9 @@ class TestPollContinuous:
 
         mod.continuous_listener.processing = True
         results = list(mod.poll_continuous([], True))
-        assert results[-1] == ([], None)
+        last = results[-1]
+        assert last[0] == []
+        assert last[1] is None
         mod.continuous_listener.processing = False
 
     def test_returns_unchanged_when_no_text(self):
@@ -207,7 +211,9 @@ class TestPollContinuous:
         mod.continuous_listener.processing = False
         with patch.object(mod.continuous_listener, "get_text", return_value=None):
             results = list(mod.poll_continuous([], True))
-            assert results[-1] == ([], None)
+            last = results[-1]
+            assert last[0] == []
+            assert last[1] is None
 
     def test_processes_text_when_available(self):
         mod = _import_app()
@@ -220,7 +226,7 @@ class TestPollContinuous:
                 mock_stream.return_value = iter(["resposta"])
                 with patch.object(mod, "generate_tts", return_value=None):
                     results = list(mod.poll_continuous([], True))
-                    last_history, last_audio = results[-1]
+                    last_history = results[-1][0]
                     assert any("[🎤 Voz]" in m.get("content", "") for m in last_history)
                     assert any(m["role"] == "assistant" for m in last_history)
 
