@@ -17,7 +17,7 @@ from core.config import load_token
 from core.history import build_api_history
 from core.llm import ask_openclaw, ask_openclaw_stream, _find_sentence_end
 from core.stt import transcribe_audio
-from core.tts import init_piper, generate_tts
+from core.tts import init_tts, generate_tts
 
 # ─── Mode Detection ──────────────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ print(f"🔧 Modo detectado: {MODE}")
 
 TOKEN = load_token()
 print("✅ Token carregado")
-init_piper()
+init_tts()
 
 # ─── TTS Thread Pool (buffer duplo: gera TTS em background enquanto LLM streama) ──
 _tts_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)

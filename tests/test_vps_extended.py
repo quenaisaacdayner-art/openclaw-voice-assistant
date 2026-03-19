@@ -19,7 +19,7 @@ import core.tts
 
 def _import_app():
     with patch("core.config.load_token", return_value="test-token"):
-        with patch("core.tts.init_piper"):
+        with patch("core.tts.init_tts"):
             import voice_assistant_app as mod
             return mod
 

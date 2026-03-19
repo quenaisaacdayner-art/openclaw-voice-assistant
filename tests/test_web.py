@@ -23,7 +23,7 @@ import core.stt
 def _import_app():
     """Import app module with mocked startup side effects."""
     with patch("core.config.load_token", return_value="test-token"):
-        with patch("core.tts.init_piper"):
+        with patch("core.tts.init_tts"):
             import voice_assistant_app as mod
             return mod
 
@@ -35,7 +35,7 @@ class TestWebConfig:
         assert "18789" in config.GATEWAY_URL
 
     def test_default_tts_engine_piper(self):
-        assert config.TTS_ENGINE in ("piper", "edge")
+        assert config.TTS_ENGINE in ("piper", "edge", "kokoro")
 
     def test_piper_model_path(self):
         assert "pt_BR-faber-medium" in config.PIPER_MODEL

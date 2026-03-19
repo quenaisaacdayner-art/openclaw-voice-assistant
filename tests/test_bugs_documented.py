@@ -24,7 +24,7 @@ import core.tts
 def _import_app():
     """Import voice_assistant_app with mocked startup side effects."""
     with patch("core.config.load_token", return_value="test-token"):
-        with patch("core.tts.init_piper"):
+        with patch("core.tts.init_tts"):
             import voice_assistant_app as mod
             return mod
 

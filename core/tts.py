@@ -1,4 +1,4 @@
-"""Text-to-Speech — Piper (local) + Edge TTS (online) com fallback automático."""
+"""Text-to-Speech — Kokoro (local) + Piper (local) + Edge TTS (online) com fallback automático."""
 
 import os
 import sys
@@ -10,10 +10,18 @@ import concurrent.futures
 import requests
 import edge_tts
 
-from core.config import TTS_ENGINE, TTS_VOICE, PIPER_MODEL
+from core.config import TTS_ENGINE, TTS_VOICE, PIPER_MODEL, PROJECT_DIR
 
 PIPER_MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx"
 PIPER_MODEL_JSON_URL = PIPER_MODEL_URL + ".json"
+
+KOKORO_MODEL_DIR = os.path.join(PROJECT_DIR, "models")
+KOKORO_MODEL_PATH = os.path.join(KOKORO_MODEL_DIR, "kokoro-v1.0.onnx")
+KOKORO_VOICES_PATH = os.path.join(KOKORO_MODEL_DIR, "voices-v1.0.bin")
+KOKORO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+KOKORO_VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "pm_alex")  # voz PT-BR masculina
+KOKORO_LANG = "pt-br"
 
 # Piper TTS (local, importado condicionalmente)
 try:
@@ -22,10 +30,36 @@ try:
 except ImportError:
     PIPER_AVAILABLE = False
 
+# Kokoro TTS (local, importado condicionalmente)
+try:
+    from kokoro_onnx import Kokoro
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KOKORO_AVAILABLE = False
+
 # Globais do módulo
 piper_voice = None
+kokoro_instance = None
 _previous_tts_file = None
-_tts_engine = TTS_ENGINE  # cópia mutável (pode mudar se Piper indisponível)
+_tts_engine = TTS_ENGINE  # cópia mutável (pode mudar se engine indisponível)
+
+
+def _download_file(url, path):
+    """Baixa arquivo de URL para path com progresso."""
+    filename = os.path.basename(path)
+    print(f"⬇️  Baixando {filename}...")
+    resp = requests.get(url, stream=True, timeout=300)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0))
+    downloaded = 0
+    with open(path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            f.write(chunk)
+            downloaded += len(chunk)
+            if total:
+                pct = downloaded * 100 // total
+                print(f"\r   {pct}% ({downloaded}/{total} bytes)", end="", flush=True)
+    print(f"\n✅ {filename} baixado")
 
 
 def download_piper_model():
@@ -37,20 +71,45 @@ def download_piper_model():
                       (PIPER_MODEL_JSON_URL, PIPER_MODEL + ".json")]:
         if os.path.exists(path):
             continue
-        filename = os.path.basename(path)
-        print(f"⬇️  Baixando {filename}...")
-        resp = requests.get(url, stream=True, timeout=120)
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        with open(path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    pct = downloaded * 100 // total
-                    print(f"\r   {pct}% ({downloaded}/{total} bytes)", end="", flush=True)
-        print(f"\n✅ {filename} baixado")
+        _download_file(url, path)
+
+
+def download_kokoro_model():
+    """Baixa modelos Kokoro se não existem localmente."""
+    os.makedirs(KOKORO_MODEL_DIR, exist_ok=True)
+
+    for url, path in [(KOKORO_MODEL_URL, KOKORO_MODEL_PATH),
+                      (KOKORO_VOICES_URL, KOKORO_VOICES_PATH)]:
+        if os.path.exists(path):
+            continue
+        _download_file(url, path)
+
+
+def init_kokoro():
+    """Carrega Kokoro TTS se disponível. Retorna True se carregou."""
+    global kokoro_instance, _tts_engine
+
+    if not KOKORO_AVAILABLE:
+        print("⚠️ Kokoro indisponível (kokoro-onnx não instalado) — tentando Piper")
+        _tts_engine = "piper"
+        return False
+
+    try:
+        download_kokoro_model()
+    except Exception as e:
+        print(f"⚠️ Erro ao baixar modelo Kokoro: {e} — tentando Piper")
+        _tts_engine = "piper"
+        return False
+
+    if os.path.exists(KOKORO_MODEL_PATH) and os.path.exists(KOKORO_VOICES_PATH):
+        print("⏳ Carregando Kokoro TTS...")
+        kokoro_instance = Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
+        print(f"✅ Kokoro TTS pronto (voz: {KOKORO_VOICE}, lang: {KOKORO_LANG})")
+        return True
+
+    print("⚠️ Modelos Kokoro não encontrados — tentando Piper")
+    _tts_engine = "piper"
+    return False
 
 
 def init_piper():
@@ -73,6 +132,44 @@ def init_piper():
     # TTS_ENGINE != "piper" (ex: "edge")
     print(f"✅ Edge TTS ({TTS_VOICE})")
     return False
+
+
+def init_tts():
+    """Inicializa o engine TTS configurado, com fallback automático: kokoro → piper → edge."""
+    global _tts_engine
+
+    if _tts_engine == "kokoro":
+        if init_kokoro():
+            return
+        # fallback: tenta piper
+        _tts_engine = "piper"
+
+    if _tts_engine == "piper":
+        if init_piper():
+            return
+        # init_piper já faz fallback pra edge
+
+    if _tts_engine == "edge":
+        print(f"✅ Edge TTS ({TTS_VOICE})")
+
+
+def generate_tts_kokoro(text):
+    """Gera TTS com Kokoro (local). Retorna path do WAV ou None."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+
+    try:
+        import soundfile as sf
+        samples, sample_rate = kokoro_instance.create(
+            text, voice=KOKORO_VOICE, speed=1.0, lang=KOKORO_LANG
+        )
+        sf.write(tmp.name, samples, sample_rate)
+
+        if os.path.getsize(tmp.name) > 100:
+            return tmp.name
+    except Exception:
+        pass
+    return None
 
 
 def generate_tts_piper(text):
@@ -126,7 +223,7 @@ def generate_tts_edge(text):
 
 
 def generate_tts(text):
-    """Gera áudio TTS. Usa Piper (local) ou Edge (online) conforme config."""
+    """Gera áudio TTS. Usa Kokoro, Piper ou Edge conforme config, com fallback."""
     global _previous_tts_file
 
     # Intencional: só filtra ❌ no início. Na prática, erros sempre começam com ❌.
@@ -144,7 +241,17 @@ def generate_tts(text):
     tts_text = text[:1500] + "..." if len(text) > 1500 else text
 
     result = None
-    if _tts_engine == "piper" and piper_voice is not None:
+
+    # Kokoro → Piper → Edge (fallback chain)
+    if _tts_engine == "kokoro" and kokoro_instance is not None:
+        result = generate_tts_kokoro(tts_text)
+        if not result:
+            # Fallback pra Piper
+            if piper_voice is not None:
+                result = generate_tts_piper(tts_text)
+            if not result:
+                result = generate_tts_edge(tts_text)
+    elif _tts_engine == "piper" and piper_voice is not None:
         result = generate_tts_piper(tts_text)
         if not result:
             # Fallback pra Edge se Piper falhar

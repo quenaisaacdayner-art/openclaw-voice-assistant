@@ -19,7 +19,7 @@ from core.config import (
 )
 from core.stt import _get_whisper
 from core.llm import ask_openclaw
-from core.tts import generate_tts, init_piper
+from core.tts import generate_tts, init_tts
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -185,7 +185,7 @@ def main():
     print(f"✅ Microfone: {mic_name}")
 
     # Inicializar Piper TTS
-    init_piper()
+    init_tts()
 
     # Carregar Whisper
     _get_whisper()

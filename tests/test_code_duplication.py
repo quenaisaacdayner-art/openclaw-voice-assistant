@@ -58,7 +58,10 @@ class TestCoreIsSource:
         assert "generate_tts" in fns
         assert "generate_tts_piper" in fns
         assert "generate_tts_edge" in fns
+        assert "generate_tts_kokoro" in fns
         assert "init_piper" in fns
+        assert "init_kokoro" in fns
+        assert "init_tts" in fns
 
     def test_core_llm_has_ask_openclaw(self):
         source = _read_file(os.path.join("core", "llm.py"))

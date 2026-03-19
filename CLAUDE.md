@@ -19,7 +19,7 @@ voice_assistant_vps.py  — Gradio remoto (mic via browser streaming, roda na VP
 ## Stack
 
 - **STT:** faster-whisper (modelo "small", ~460MB, CPU)
-- **TTS:** Piper local (pt_BR-faber-medium, 63MB — web/cli) + Edge TTS online (fallback/vps)
+- **TTS:** Kokoro (local, ~300MB, qualidade 8/10) + Piper (local, 63MB) + Edge TTS (online) — fallback: kokoro → piper → edge
 - **LLM:** OpenClaw Gateway API (chatCompletions, streaming SSE)
 - **UI:** Gradio 6.x (web + vps)
 - **VAD web local:** RealtimeSTT (PyAudio direto no server)
@@ -31,7 +31,7 @@ voice_assistant_vps.py  — Gradio remoto (mic via browser streaming, roda na VP
 |---|---|---|---|
 | Gateway | localhost:18789 | localhost:18789 | localhost:19789 |
 | Mic | sounddevice | PyAudio (RealtimeSTT) | Browser streaming |
-| TTS | Piper + Edge | Piper + Edge | Edge only |
+| TTS | Kokoro/Piper + Edge | Kokoro/Piper + Edge | Edge only |
 | Escuta contínua | ❌ | RealtimeSTT | BrowserContinuousListener |
 
 ## Testes

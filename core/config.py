@@ -13,7 +13,7 @@ GATEWAY_URL = os.environ.get(
 MODEL = os.environ.get("OPENCLAW_MODEL", "openclaw:main")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
-TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper" (local) ou "edge" (Microsoft)
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper", "edge" ou "kokoro"
 PIPER_MODEL = os.path.join(PROJECT_DIR, "models", "pt_BR-faber-medium.onnx")
 
 
