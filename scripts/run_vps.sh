@@ -19,4 +19,12 @@ echo "📡 Acesse via: ssh -N -L 7860:127.0.0.1:7860 root@<VPS_IP>"
 echo "   Depois abra: http://127.0.0.1:7860"
 echo ""
 
-python voice_assistant_app.py
+APP_MODE="${APP_MODE:-websocket}"
+
+if [ "$APP_MODE" = "gradio" ]; then
+    echo "📻 Modo: Gradio (fallback)"
+    python voice_assistant_app.py
+else
+    echo "🔌 Modo: WebSocket S2S"
+    python server_ws.py
+fi

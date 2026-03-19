@@ -5,3 +5,6 @@ gradio
 scipy
 numpy
 sounddevice
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0

@@ -15,4 +15,12 @@ echo "   Whisper: $WHISPER_MODEL"
 echo "   TTS: $TTS_ENGINE"
 echo ""
 
-python voice_assistant_app.py
+APP_MODE="${APP_MODE:-websocket}"
+
+if [ "$APP_MODE" = "gradio" ]; then
+    echo "📻 Modo: Gradio (fallback)"
+    python voice_assistant_app.py
+else
+    echo "🔌 Modo: WebSocket S2S"
+    python server_ws.py
+fi

@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Voice Assistant</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1a1a2e; }
+::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+/* Status bar */
+.status-bar {
+    background: #16162a;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #2d2d44;
+    flex-shrink: 0;
+}
+.status-bar h1 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    flex: 1;
+}
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: #aaa;
+}
+.status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #666;
+    transition: background 0.3s;
+}
+.status-dot.connected { background: #4caf50; }
+.status-dot.listening { background: #f44336; animation: pulse 1.5s infinite; }
+.status-dot.thinking { background: #ff9800; animation: pulse 0.8s infinite; }
+.status-dot.speaking { background: #2196f3; }
+.status-dot.disconnected { background: #666; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Chat area */
+.chat-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.message {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+.message.user {
+    align-self: flex-end;
+    background: #2d2d44;
+    border-bottom-right-radius: 4px;
+}
+.message.assistant {
+    align-self: flex-start;
+    background: #252540;
+    border-bottom-left-radius: 4px;
+}
+.message .label {
+    font-size: 0.75rem;
+    color: #888;
+    margin-bottom: 4px;
+}
+
+/* Bottom bar */
+.bottom-bar {
+    background: #16162a;
+    padding: 12px 16px;
+    border-top: 1px solid #2d2d44;
+    flex-shrink: 0;
+}
+.volume-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.volume-bar-wrapper {
+    flex: 1;
+    height: 6px;
+    background: #2d2d44;
+    border-radius: 3px;
+    overflow: hidden;
+}
+.volume-bar {
+    height: 100%;
+    width: 0%;
+    background: #4caf50;
+    border-radius: 3px;
+    transition: width 0.05s;
+}
+.volume-bar.speaking { background: #f44336; }
+
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.btn {
+    background: #2d2d44;
+    border: none;
+    color: #e0e0e0;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background 0.2s;
+}
+.btn:hover { background: #3d3d54; }
+.btn.active { background: #f44336; }
+.btn.mic-btn { font-size: 1.2rem; padding: 8px 14px; }
+
+.status-text {
+    flex: 1;
+    text-align: center;
+    font-size: 0.85rem;
+    color: #888;
+}
+
+/* Error toast */
+.error-toast {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #d32f2f;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    z-index: 100;
+}
+.error-toast.show { opacity: 1; }
+
+@media (max-width: 600px) {
+    .message { max-width: 90%; }
+    .status-bar h1 { font-size: 0.95rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="status-bar">
+    <h1>OpenClaw Voice Assistant</h1>
+    <div class="status-indicator">
+        <div class="status-dot disconnected" id="statusDot"></div>
+        <span id="statusText">Desconectado</span>
+    </div>
+</div>
+
+<div class="chat-container" id="chat"></div>
+
+<div class="bottom-bar">
+    <div class="volume-container">
+        <span style="font-size:0.8rem;color:#888">Mic</span>
+        <div class="volume-bar-wrapper">
+            <div class="volume-bar" id="volumeBar"></div>
+        </div>
+    </div>
+    <div class="controls">
+        <button class="btn mic-btn" id="micBtn" onclick="toggleMute()" title="Mute/Unmute">🎤</button>
+        <span class="status-text" id="bottomStatus">Clique para iniciar</span>
+        <button class="btn" id="startBtn" onclick="start()">Iniciar</button>
+    </div>
+</div>
+
+<div class="error-toast" id="errorToast"></div>
+
+<script>
+// ─── Config ──────────────────────────────────────────
+const WS_URL = `ws://${window.location.host}/ws`;
+const SAMPLE_RATE = 16000;
+const VAD_THRESHOLD = 0.01;
+const SPEECH_MIN_MS = 200;
+const SILENCE_MS = 800;
+
+// ─── State ───────────────────────────────────────────
+let ws = null;
+let audioContext = null;
+let mediaStream = null;
+let processor = null;
+let isMuted = false;
+let started = false;
+
+// VAD state
+let isSpeechDetected = false;
+let speechStartTime = 0;
+let silenceStartTime = 0;
+
+// Playback
+let playbackQueue = [];
+let isPlaying = false;
+let playbackContext = null;
+
+// Server state
+let serverSpeaking = false;
+
+// UI
+const chat = document.getElementById('chat');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const volumeBar = document.getElementById('volumeBar');
+const micBtn = document.getElementById('micBtn');
+const bottomStatus = document.getElementById('bottomStatus');
+const startBtn = document.getElementById('startBtn');
+const errorToast = document.getElementById('errorToast');
+
+let currentAssistantEl = null;
+let reconnectTimer = null;
+
+// ─── Start ───────────────────────────────────────────
+async function start() {
+    if (started) return;
+    started = true;
+    startBtn.textContent = 'Conectado';
+    startBtn.disabled = true;
+    bottomStatus.textContent = 'Conectando...';
+
+    await startMic();
+    connect();
+}
+
+// ─── WebSocket ───────────────────────────────────────
+function connect() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+        setStatus('connected', 'Conectado');
+        bottomStatus.textContent = 'Escutando...';
+    };
+
+    ws.onclose = () => {
+        setStatus('disconnected', 'Desconectado');
+        bottomStatus.textContent = 'Reconectando...';
+        reconnectTimer = setTimeout(connect, 3000);
+    };
+
+    ws.onerror = () => {};
+
+    ws.onmessage = (event) => {
+        if (event.data instanceof Blob) {
+            enqueueAudio(event.data);
+        } else {
+            const data = JSON.parse(event.data);
+            switch (data.type) {
+                case 'status': handleStatus(data.status); break;
+                case 'transcript': addUserMessage(data.text); break;
+                case 'text': updateAssistantMessage(data.text, data.done); break;
+                case 'error': showError(data.message); break;
+            }
+        }
+    };
+}
+
+function handleStatus(status) {
+    serverSpeaking = (status === 'speaking');
+
+    switch (status) {
+        case 'listening':
+            setStatus('listening', 'Escutando');
+            bottomStatus.textContent = 'Escutando...';
+            break;
+        case 'thinking':
+            setStatus('thinking', 'Pensando...');
+            bottomStatus.textContent = 'Pensando...';
+            break;
+        case 'speaking':
+            setStatus('speaking', 'Falando');
+            bottomStatus.textContent = 'Falando...';
+            break;
+        default:
+            setStatus('connected', status);
+    }
+}
+
+function setStatus(cls, text) {
+    statusDot.className = 'status-dot ' + cls;
+    statusText.textContent = text;
+}
+
+// ─── Chat UI ─────────────────────────────────────────
+function addUserMessage(text) {
+    if (!text) return;
+    const el = document.createElement('div');
+    el.className = 'message user';
+    el.innerHTML = `<div class="label">Voce</div>${escapeHtml(text)}`;
+    chat.appendChild(el);
+    scrollChat();
+    currentAssistantEl = null;
+}
+
+function updateAssistantMessage(text, done) {
+    if (!currentAssistantEl) {
+        currentAssistantEl = document.createElement('div');
+        currentAssistantEl.className = 'message assistant';
+        currentAssistantEl.innerHTML = `<div class="label">OpenClaw</div><span class="text"></span>`;
+        chat.appendChild(currentAssistantEl);
+    }
+    currentAssistantEl.querySelector('.text').textContent = text;
+    scrollChat();
+    if (done) {
+        currentAssistantEl = null;
+    }
+}
+
+function scrollChat() {
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+function showError(msg) {
+    errorToast.textContent = msg;
+    errorToast.classList.add('show');
+    setTimeout(() => errorToast.classList.remove('show'), 4000);
+}
+
+// ─── Audio Capture ───────────────────────────────────
+async function startMic() {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    });
+
+    // Usar sampleRate nativo do browser — downsample pra 16kHz no processamento
+    audioContext = new AudioContext();
+    playbackContext = audioContext;
+
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const downsampled = downsample(input, audioContext.sampleRate, SAMPLE_RATE);
+        processAudioChunk(downsampled);
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+}
+
+function downsample(float32Array, fromRate, toRate) {
+    if (fromRate === toRate) return float32Array;
+    const ratio = fromRate / toRate;
+    const newLength = Math.round(float32Array.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+        result[i] = float32Array[Math.round(i * ratio)];
+    }
+    return result;
+}
+
+// ─── VAD ─────────────────────────────────────────────
+function processAudioChunk(float32Array) {
+    // Calcular RMS
+    let sum = 0;
+    for (let i = 0; i < float32Array.length; i++) {
+        sum += float32Array[i] * float32Array[i];
+    }
+    const rms = Math.sqrt(sum / float32Array.length);
+
+    // Atualizar visualizacao
+    const pct = Math.min(rms / 0.1, 1) * 100;
+    volumeBar.style.width = pct + '%';
+    volumeBar.classList.toggle('speaking', isSpeechDetected);
+
+    // Nao enviar audio se servidor esta falando ou mic mudo
+    if (serverSpeaking || isMuted) return;
+
+    if (rms > VAD_THRESHOLD) {
+        if (!isSpeechDetected) {
+            if (speechStartTime === 0) {
+                speechStartTime = Date.now();
+            }
+            if (Date.now() - speechStartTime >= SPEECH_MIN_MS) {
+                isSpeechDetected = true;
+            }
+        }
+        silenceStartTime = 0;
+    } else if (isSpeechDetected) {
+        if (silenceStartTime === 0) silenceStartTime = Date.now();
+        if (Date.now() - silenceStartTime > SILENCE_MS) {
+            // Fim de fala
+            isSpeechDetected = false;
+            speechStartTime = 0;
+            silenceStartTime = 0;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type: 'vad_event', event: 'speech_end'}));
+            }
+        }
+    } else {
+        // Reset speech start se nao atingiu threshold minimo
+        if (rms <= VAD_THRESHOLD) speechStartTime = 0;
+    }
+
+    // Converter float32 -> int16 e enviar
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const int16 = new Int16Array(float32Array.length);
+        for (let i = 0; i < float32Array.length; i++) {
+            int16[i] = Math.max(-32768, Math.min(32767, float32Array[i] * 32768));
+        }
+        ws.send(int16.buffer);
+    }
+}
+
+// ─── Audio Playback ──────────────────────────────────
+async function enqueueAudio(blob) {
+    try {
+        const arrayBuffer = await blob.arrayBuffer();
+        const audioBuffer = await playbackContext.decodeAudioData(arrayBuffer);
+        playbackQueue.push(audioBuffer);
+        if (!isPlaying) playNext();
+    } catch (e) {
+        console.error('Erro ao decodificar audio:', e);
+    }
+}
+
+function playNext() {
+    if (playbackQueue.length === 0) {
+        isPlaying = false;
+        return;
+    }
+    isPlaying = true;
+    const buffer = playbackQueue.shift();
+    const source = playbackContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(playbackContext.destination);
+    source.onended = () => playNext();
+    source.start();
+}
+
+// ─── Mute ────────────────────────────────────────────
+function toggleMute() {
+    isMuted = !isMuted;
+    micBtn.classList.toggle('active', isMuted);
+    micBtn.textContent = isMuted ? '🔇' : '🎤';
+}
+</script>
+</body>
+</html>

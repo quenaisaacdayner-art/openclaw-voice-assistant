@@ -11,4 +11,12 @@ Write-Host "   Modelo: $env:OPENCLAW_MODEL"
 Write-Host "   Whisper: $env:WHISPER_MODEL"
 Write-Host "   TTS: $env:TTS_ENGINE"
 
-python voice_assistant_app.py
+if (-not $env:APP_MODE) { $env:APP_MODE = "websocket" }
+
+if ($env:APP_MODE -eq "gradio") {
+    Write-Host "📻 Modo: Gradio (fallback)"
+    python voice_assistant_app.py
+} else {
+    Write-Host "🔌 Modo: WebSocket S2S"
+    python server_ws.py
+}
