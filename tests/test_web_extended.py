@@ -103,12 +103,25 @@ class TestGenerateTTS:
         with open(old_file, "w") as f:
             f.write("old")
         core.tts._previous_tts_file = old_file
+        core.tts._old_tts_files.clear()
+
+        # Create dummy files for generate_tts to return (so _previous_tts_file cycles)
+        dummies = []
+        for i in range(3):
+            d = str(tmp_path / f"dummy{i}.mp3")
+            with open(d, "w") as f:
+                f.write(f"d{i}")
+            dummies.append(d)
 
         original_engine = core.tts._tts_engine
         core.tts._tts_engine = "edge"
-        with patch("core.tts.generate_tts_edge", return_value=None):
-            core.tts.generate_tts("text")
+        with patch("core.tts.generate_tts_edge", side_effect=dummies):
+            # old_file moves to _old_tts_files on 1st call, cleaned after 3rd (keeps 2)
+            core.tts.generate_tts("text1")
+            core.tts.generate_tts("text2")
+            core.tts.generate_tts("text3")
         core.tts._tts_engine = original_engine
+        core.tts._old_tts_files.clear()
 
         assert not os.path.exists(old_file)
 

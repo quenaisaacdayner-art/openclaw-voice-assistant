@@ -40,6 +40,7 @@ except ImportError:
 # Globais do módulo
 piper_voice = None
 kokoro_instance = None
+_old_tts_files = []  # lista de arquivos pra limpar (com delay)
 _previous_tts_file = None
 _tts_engine = TTS_ENGINE  # cópia mutável (pode mudar se engine indisponível)
 
@@ -230,10 +231,13 @@ def generate_tts(text):
     if not text or text.startswith("❌"):
         return None
 
-    # Limpar arquivo TTS anterior (Gradio já serviu)
+    # Limpar arquivos TTS antigos (mantém os 2 mais recentes pro Gradio servir)
     if _previous_tts_file:
+        _old_tts_files.append(_previous_tts_file)
+    while len(_old_tts_files) > 2:
+        old = _old_tts_files.pop(0)
         try:
-            os.unlink(_previous_tts_file)
+            os.unlink(old)
         except OSError:
             pass
 

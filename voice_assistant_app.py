@@ -39,7 +39,7 @@ def _detect_mode():
 
     t = threading.Thread(target=_try_import, daemon=True)
     t.start()
-    t.join(timeout=5)
+    t.join(timeout=15)  # RealtimeSTT pode demorar >5s pra importar
     return result["mode"]
 
 

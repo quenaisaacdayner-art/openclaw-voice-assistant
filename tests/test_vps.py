@@ -240,12 +240,25 @@ class TestVPSTTS:
         with open(fake_prev, "w") as f:
             f.write("old audio")
         core.tts._previous_tts_file = fake_prev
+        core.tts._old_tts_files.clear()
 
-        with patch("core.tts.generate_tts_edge", return_value=None):
+        # Create dummy files for generate_tts to return (so _previous_tts_file cycles)
+        dummies = []
+        for i in range(3):
+            d = str(tmp_path / f"dummy{i}.mp3")
+            with open(d, "w") as f:
+                f.write(f"d{i}")
+            dummies.append(d)
+
+        with patch("core.tts.generate_tts_edge", side_effect=dummies):
             original_engine = core.tts._tts_engine
             core.tts._tts_engine = "edge"
-            core.tts.generate_tts("texto")
+            # old file moves to _old_tts_files on 1st call, cleaned after 3rd (keeps 2)
+            core.tts.generate_tts("texto1")
+            core.tts.generate_tts("texto2")
+            core.tts.generate_tts("texto3")
             core.tts._tts_engine = original_engine
+        core.tts._old_tts_files.clear()
 
         assert not os.path.exists(fake_prev)
 
