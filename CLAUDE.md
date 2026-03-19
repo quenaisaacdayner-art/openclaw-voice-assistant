@@ -18,12 +18,12 @@ VOZ → VAD → STT (Whisper) → LLM streaming (OpenClaw) → TTS streaming →
 S2S com TTFA (Time-to-First-Audio) < 5 segundos. O OpenClaw é o cérebro — o LLM que processa e responde. O voice app é a interface que conecta voz humana ao OpenClaw.
 
 ### Fases
-- **Fase 1 (atual):** Otimização de latência sem mudar arquitetura — modelo rápido (Sonnet 4.6), Whisper tiny, split agressivo de texto, cleanup de código
-- **Fase 2:** Migrar pra WebSocket + Web Audio API — S2S real com streaming bidirecional de áudio
-- **Fase 3:** Polish — TTS streaming nativo, streaming STT, UI, documentação dos 3 cenários
+- **Fase 1 (concluída):** Otimização de latência — modelo rápido (Sonnet 4.6), Whisper tiny, split agressivo de texto
+- **Fase 2 (concluída):** WebSocket + Web Audio API — S2S real com streaming bidirecional de áudio
+- **Fase 3 (concluída):** Barge-in, TTS pipeline, testes, polish
 
 ### Estado atual
-Protótipo funcional com Gradio. Latência ~35s com Opus 4 → meta ~6-8s após Fase 1.
+WebSocket S2S funcional com barge-in. ~3-6s do fim da fala até início da resposta em áudio (Sonnet 4.6 + Whisper tiny).
 
 ## 3 Cenários de Deploy
 
@@ -52,7 +52,10 @@ core/                    — Módulos compartilhados (fonte única de verdade)
   stt.py                 — Whisper STT wrapper (lazy loading thread-safe)
   tts.py                 — Multi-engine TTS (kokoro → piper → edge fallback)
 
-voice_assistant_app.py   — App Gradio unificado (auto-detecta LOCAL vs BROWSER)
+server_ws.py             — Servidor WebSocket S2S (FastAPI + uvicorn) — PRINCIPAL
+static/index.html        — Frontend Web Audio API (HTML + CSS + JS inline)
+
+voice_assistant_app.py   — App Gradio unificado (auto-detecta LOCAL vs BROWSER) — fallback
 voice_assistant_cli.py   — CLI terminal
 
 tests/                   — ~233 testes (pytest)
@@ -109,6 +112,9 @@ models/                  — Modelos TTS locais (download automático)
 5. **`_detect_mode()` (app)** — Thread com timeout 15s pra importar RealtimeSTT. Startup lento mas funciona.
 6. **`ContinuousListener` (modo LOCAL)** — RealtimeSTT com Silero VAD em thread daemon.
 7. **`BrowserContinuousListener` (modo BROWSER)** — VAD manual por RMS. `audio_input.stream()` → `feed_chunk()`.
+8. **Barge-in (server_ws.py)** — cancel_event + asyncio.create_task. Se a task não checa cancel_event frequentemente, pode demorar a parar.
+9. **Audio playback queue (index.html)** — playNext() encadeia via onended. Se decodeAudioData falhar num chunk, a fila trava. Precisa de try/catch.
+10. **Downsample (index.html)** — Nearest-neighbor simples. Pode ter aliasing em áudio com frequências altas. Aceitável pra voz.
 
 ## Variáveis de ambiente
 
@@ -123,7 +129,8 @@ Definidas em `.env` (ver `.env.example`):
 | `TTS_ENGINE` | `edge` | `edge` (online) / `piper` (local) / `kokoro` (local, melhor) |
 | `TTS_VOICE` | `pt-BR-AntonioNeural` | Voz Edge TTS |
 | `SERVER_HOST` | `127.0.0.1` | `0.0.0.0` pra acesso remoto |
-| `PORT` | `7860` | Porta Gradio |
+| `PORT` | `7860` | Porta do servidor |
+| `APP_MODE` | `websocket` | `websocket` (S2S) / `gradio` (fallback Gradio) |
 
 ## Convenções
 
@@ -142,4 +149,4 @@ lsof -ti:7860 | xargs kill -9 2>/dev/null
 python -m pytest tests/ -v
 ```
 
-~233 testes (215-219 pass, 14-18 skip). Skips por `_detect_mode` timeout — threading não-determinístico.
+~240+ testes (pytest). Inclui testes de estrutura do frontend e conversão PCM→WAV. Skips por `_detect_mode` timeout — threading não-determinístico.

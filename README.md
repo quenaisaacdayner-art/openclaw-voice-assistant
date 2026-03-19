@@ -16,7 +16,9 @@ O **OpenClaw** é o cérebro — seu agente com memória, skills e contexto. Est
 ## Features
 
 - **Speech-to-Speech** — Conversação por voz com detecção automática de fala (VAD)
-- **Streaming** — LLM gera texto + TTS gera áudio simultaneamente (buffer duplo)
+- **Barge-in** — Interrompa a resposta falando por cima — o assistente para e escuta
+- **WebSocket S2S** — Streaming bidirecional real, sem polling HTTP
+- **Streaming** — LLM gera texto + TTS gera áudio simultaneamente (por frase)
 - **3 cenários de deploy** — Tudo local, tudo VPS, ou app local + OpenClaw remoto
 - **3 engines TTS** — Kokoro (qualidade alta, local) → Piper (local, leve) → Edge TTS (online)
 - **Whisper local** — STT na CPU, sem API keys, sem custos
@@ -107,27 +109,21 @@ Token carregado automaticamente de `~/.openclaw/openclaw.json`.
 
 ```
 ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌───────────┐
-│ Microfone │───▶│ VAD+STT  │───▶│   OpenClaw    │───▶│    TTS    │
-│ (browser) │    │ (Whisper) │    │  (streaming)  │    │ (buffer   │
-└──────────┘    └──────────┘    └──────────────┘    │  duplo)   │
-   Você fala      ~1-2s CPU       ~2-4s Sonnet      └───────────┘
-                                                       ~0.5-2s
-                                                          │
-                                                          ▼
-                                                     🔊 Autoplay
+│ Microfone │◄──▶│ WebSocket│◄──▶│   OpenClaw    │───▶│    TTS    │
+│ (browser) │    │ (FastAPI) │    │  (streaming)  │    │ (por      │
+└──────────┘    └──────────┘    └──────────────┘    │  frase)   │
+   Bidirecional    ~50ms            ~2-4s Sonnet      └───────────┘
+                                                       ~0.5-1s
 ```
 
-```
-core/
-  config.py     — Configuração (env vars)
-  stt.py        — Whisper STT
-  tts.py        — Kokoro + Piper + Edge (fallback chain)
-  llm.py        — OpenClaw API (streaming SSE)
-  history.py    — Histórico de conversa
+~3-6s do fim da fala até início da resposta em áudio (com Sonnet 4.6 + Whisper tiny).
 
-voice_assistant_app.py   — Interface web (Gradio)
-voice_assistant_cli.py   — Interface terminal
-scripts/                 — Scripts de conexão (3 cenários)
+```
+server_ws.py             ─── Servidor WebSocket S2S (principal)
+static/index.html        ─── Frontend Web Audio API
+voice_assistant_app.py   ─── Fallback Gradio (APP_MODE=gradio)
+voice_assistant_cli.py   ─── CLI terminal
+core/                    ─── Módulos compartilhados
 ```
 
 ## Stack
@@ -147,9 +143,9 @@ scripts/                 — Scripts de conexão (3 cenários)
 - [x] Escuta contínua (local + browser)
 - [x] Buffer duplo TTS
 - [x] 3 engines TTS com fallback
-- [ ] **Fase 1:** Otimização de latência (modelo rápido, Whisper tiny, split agressivo)
-- [ ] **Fase 2:** WebSocket + Web Audio API (S2S real, streaming bidirecional)
-- [ ] **Fase 3:** TTS streaming nativo, STT streaming, polish
+- [x] **Fase 1:** Otimização de latência (modelo rápido, Whisper tiny, split agressivo)
+- [x] **Fase 2:** WebSocket + Web Audio API (S2S real, streaming bidirecional)
+- [x] **Fase 3:** Barge-in, TTS pipeline, testes, polish
 
 ## Contribuindo
 

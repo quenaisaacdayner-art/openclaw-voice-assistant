@@ -228,6 +228,7 @@ let silenceStartTime = 0;
 let playbackQueue = [];
 let isPlaying = false;
 let playbackContext = null;
+let currentSource = null;
 
 // Server state
 let serverSpeaking = false;
@@ -409,8 +410,16 @@ function processAudioChunk(float32Array) {
     volumeBar.style.width = pct + '%';
     volumeBar.classList.toggle('speaking', isSpeechDetected);
 
-    // Nao enviar audio se servidor esta falando ou mic mudo
-    if (serverSpeaking || isMuted) return;
+    // Barge-in: detectou fala durante playback
+    if (isPlaying && rms > VAD_THRESHOLD * 3) {
+        stopPlayback();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({type: 'interrupt'}));
+        }
+    }
+
+    // Nao enviar audio se mic mudo
+    if (isMuted) return;
 
     if (rms > VAD_THRESHOLD) {
         if (!isSpeechDetected) {
@@ -463,15 +472,26 @@ async function enqueueAudio(blob) {
 function playNext() {
     if (playbackQueue.length === 0) {
         isPlaying = false;
+        currentSource = null;
         return;
     }
     isPlaying = true;
     const buffer = playbackQueue.shift();
     const source = playbackContext.createBufferSource();
+    currentSource = source;
     source.buffer = buffer;
     source.connect(playbackContext.destination);
     source.onended = () => playNext();
     source.start();
+}
+
+function stopPlayback() {
+    if (currentSource) {
+        try { currentSource.stop(); } catch(e) {}
+        currentSource = null;
+    }
+    playbackQueue = [];
+    isPlaying = false;
 }
 
 // ─── Mute ────────────────────────────────────────────
