@@ -1,138 +1,129 @@
-# 🎤 OpenClaw Voice Assistant
+# OpenClaw Voice Assistant
 
-Talk to your [OpenClaw](https://github.com/openclaw/openclaw) AI agent using your voice. 100% free. Runs locally.
+Assistente de voz open source conectado ao [OpenClaw](https://github.com/openclaw/openclaw). Fale com seu agente de IA usando a voz — Whisper transcreve, OpenClaw pensa, TTS fala a resposta. 100% grátis, roda localmente.
 
-> Built by someone learning to code — documenting everything in public. [@preneurIAquem](https://x.com/preneurIAquem)
+> Construído por alguém aprendendo a programar — documentando tudo em público. [@preneurIAquem](https://x.com/preneurIAquem)
 
-## What it does
-
-```
-You speak → Whisper transcribes → OpenClaw thinks → Edge TTS speaks back
-```
-
-Full voice conversation with your AI agent through a web interface. No API keys needed for speech — Whisper runs on your CPU, Edge TTS is free.
-
-## Two modes
-
-| Mode | Command | Interface |
-|------|---------|-----------|
-| **Web** (recommended) | `python voice_assistant_web.py` | Browser with chat UI, mic button, auto-play voice |
-| **Terminal** | `python voice_assistant.py` | Press Enter to record, type to send text |
-
-## Stack
-
-| Layer | Tool | Cost | Runs on |
-|-------|------|------|---------|
-| **Speech-to-Text** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Free | CPU (local) |
-| **LLM** | [OpenClaw](https://github.com/openclaw/openclaw) Gateway API | Your existing plan | Local/Remote |
-| **Text-to-Speech** | [edge-tts](https://github.com/rany2/edge-tts) (Microsoft) | Free | Cloud (no key) |
-| **UI** | [Gradio](https://gradio.app/) | Free | Local browser |
-
-## Requirements
-
-- Python 3.10+
-- [OpenClaw](https://github.com/openclaw/openclaw) running with gateway HTTP API enabled
-- A microphone
-- Windows / macOS / Linux
-
-## Setup
-
-```bash
-# Clone
-git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
-cd openclaw-voice-assistant
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run (web interface)
-python voice_assistant_web.py
-
-# Or run (terminal mode)
-python voice_assistant.py
-```
-
-### OpenClaw Gateway
-
-The assistant connects to OpenClaw's HTTP API. Make sure your gateway has `chatCompletions` enabled:
-
-```json
-{
-  "gateway": {
-    "http": {
-      "endpoints": {
-        "chatCompletions": { "enabled": true }
-      }
-    }
-  }
-}
-```
-
-The token is auto-loaded from `~/.openclaw/openclaw.json`.
-
-## Configuration
-
-All settings are environment variables (optional — defaults work out of the box):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789/v1/chat/completions` | Gateway endpoint |
-| `OPENCLAW_MODEL` | `openclaw:main` | Agent to talk to |
-| `TTS_VOICE` | `pt-BR-AntonioNeural` | Edge TTS voice ([list](https://gist.github.com/BettyJJ/17cbaa1de96235a7f5773b8c50bf8f34)) |
-| `WHISPER_MODEL` | `small` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) |
-| `OPENCLAW_GATEWAY_TOKEN` | (from config) | Override gateway token |
-
-### Whisper models
-
-| Model | Size | Speed | Portuguese quality |
-|-------|------|-------|--------------------|
-| `tiny` | 75MB | ⚡ Fast | Basic — misses a lot |
-| `base` | 150MB | ⚡ Fast | Okay for clear speech |
-| `small` | 461MB | 🔵 Medium | Good for most use cases |
-| `medium` | 1.5GB | 🟡 Slower | Great — handles accents well |
-| `large-v3` | 3GB | 🔴 Slow | Best quality |
-
-### TTS voices (Portuguese)
-
-- `pt-BR-AntonioNeural` — Male, neutral (default)
-- `pt-BR-FranciscaNeural` — Female, neutral
-- `pt-BR-ThalitaNeural` — Female, warm
+<!-- TODO: substituir por GIF de demo -->
+![Demo placeholder](https://via.placeholder.com/800x400?text=Demo+GIF+aqui)
 
 ## Features
 
-- 🌐 **Web interface** — Chat UI in your browser with mic recording and auto-play voice
-- 🎤 Auto-detects best microphone (prefers built-in over virtual cameras)
-- 🔇 VAD filter — ignores silence, prevents Whisper hallucinations
-- 💬 Conversation history — remembers last 10 exchanges
-- 🔊 Auto-play voice responses in browser
-- ⌨️ Type or speak — both work seamlessly
+- **Interface web** — Chat UI no browser com gravação de mic e autoplay de voz
+- **CLI** — Modo terminal para uso sem browser
+- **Auto-detecção** — Detecta automaticamente se roda local (PyAudio) ou remoto (browser streaming)
+- **3 engines de TTS** — Kokoro (qualidade 8/10, local) → Piper (local, leve) → Edge TTS (online, fallback)
+- **Buffer duplo de TTS** — Gera frase N+1 enquanto frase N toca, sem gaps
+- **Whisper local** — STT roda na CPU, sem API keys
+- **Escuta contínua** — VAD detecta quando você fala, sem apertar botão
+- **Indicadores visuais** — Status em tempo real (gravando/pensando/falando)
+- **Histórico** — Lembra últimas 10 trocas de conversa
+- **Configurável via UI** — Muda gateway, mic, TTS e modelo Whisper sem reiniciar
+- **Mobile-friendly** — Layout responsivo, funciona no celular
+- **Theme escuro** — Padrão
 
-## How it works
+## Instalação rápida
+
+```bash
+git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
+cd openclaw-voice-assistant
+pip install -r requirements.txt
+```
+
+Para TTS local de alta qualidade (Kokoro/Piper) e mic direto no server:
+
+```bash
+pip install -r requirements-local.txt
+```
+
+## Modos de uso
+
+### Web/Gradio (recomendado)
+
+```bash
+python voice_assistant_app.py
+```
+
+Abre interface no browser. Auto-detecta:
+- **Modo LOCAL** — se PyAudio está disponível, usa mic direto via RealtimeSTT
+- **Modo BROWSER** — se não tem PyAudio, usa streaming de áudio do browser com VAD
+
+### CLI (terminal)
+
+```bash
+python voice_assistant_cli.py
+```
+
+Modo terminal: ENTER para gravar, digite texto para enviar sem voz.
+
+### VPS / Remoto
+
+```bash
+# Na VPS, rodar o app normalmente:
+python voice_assistant_app.py
+
+# No seu PC, criar túnel SSH:
+bash scripts/connect.sh
+```
+
+O app detecta automaticamente modo BROWSER quando PyAudio não está disponível.
+
+## Configuração
+
+Todas as variáveis são opcionais — os defaults funcionam out of the box.
+
+| Variável | Default | Descrição |
+|----------|---------|-----------|
+| `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789/v1/chat/completions` | Endpoint do gateway |
+| `OPENCLAW_GATEWAY_TOKEN` | (de `~/.openclaw/openclaw.json`) | Override do token do gateway |
+| `OPENCLAW_MODEL` | `openclaw:main` | Agente/modelo a usar |
+| `TTS_VOICE` | `pt-BR-AntonioNeural` | Voz do Edge TTS |
+| `TTS_ENGINE` | `piper` | Engine de TTS: `kokoro`, `piper` ou `edge` |
+| `WHISPER_MODEL` | `small` | Modelo Whisper: `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `SERVER_HOST` | `0.0.0.0` | Host do servidor Gradio |
+| `PORT` | `7860` | Porta do servidor Gradio |
+
+O token é carregado automaticamente de `~/.openclaw/openclaw.json`. Certifique-se de que o gateway OpenClaw tem `chatCompletions` habilitado.
+
+## Arquitetura
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐
-│  Microphone  │────▶│ faster-whisper│────▶│   OpenClaw    │────▶│  edge-tts   │
-│  (browser)   │     │  (transcribe) │     │  (think)      │     │  (speak)    │
-└─────────────┘     └──────────────┘     └──────────────┘     └─────────────┘
-     You speak        STT (local)         Your AI agent        TTS (free)
-                      ~1-3 sec             ~2-5 sec            ~1-2 sec
+┌──────────────┐     ┌───────────────┐     ┌──────────────┐     ┌─────────────┐
+│  Microfone   │────▶│ faster-whisper │────▶│   OpenClaw    │────▶│  TTS Engine │
+│ (browser/hw) │     │   (STT local)  │     │  Gateway API  │     │ Kokoro/Piper│
+└──────────────┘     └───────────────┘     │  (streaming)  │     │  /Edge TTS  │
+     Você fala         ~1-3s CPU           └──────────────┘     └─────────────┘
+                                              ~2-5s LLM            ~0.5-2s
+                                                                      │
+                                                                      ▼
+                                                                 🔊 Autoplay
 ```
 
-Total latency: **4-10 seconds** depending on response length and Whisper model.
+```
+voice_assistant_cli.py   ─── CLI (terminal, ENTER pra gravar)
+voice_assistant_app.py   ─── Gradio (auto-detecta local vs browser)
+core/
+  config.py              ─── Constantes, load_token(), env vars
+  stt.py                 ─── faster-whisper, transcribe_audio()
+  tts.py                 ─── Kokoro + Piper + Edge TTS com fallback
+  llm.py                 ─── ask_openclaw(), streaming SSE
+  history.py             ─── build_api_history(), MAX_HISTORY
+```
 
-## Roadmap
+## Stack técnico
 
-- [ ] Continuous listening with VAD (no button press needed)
-- [ ] Kokoro TTS — near-human voice quality, runs local
-- [ ] Streaming responses — speak as text arrives
-- [x] ~~Gradio web interface with chat history~~
+| Camada | Ferramenta | Custo | Roda em |
+|--------|-----------|-------|---------|
+| **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Grátis | CPU local |
+| **LLM** | [OpenClaw](https://github.com/openclaw/openclaw) Gateway API | Seu plano | Local/Remoto |
+| **TTS** | [Kokoro](https://github.com/hexgrad/kokoro) / [Piper](https://github.com/rhasspy/piper) / [Edge TTS](https://github.com/rany2/edge-tts) | Grátis | Local / Cloud |
+| **UI** | [Gradio 6.x](https://gradio.app/) | Grátis | Browser |
+| **VAD** | RealtimeSTT (local) / RMS energy (browser) | Grátis | Local |
 
-## Built with
+## Contribuindo
 
-This project was built in a single session (~2 hours) using [OpenClaw](https://github.com/openclaw/openclaw) as the coding assistant. The AI helped write the code, debug microphone issues, and create this README.
+Veja [CONTRIBUTING.md](CONTRIBUTING.md) para instruções de como rodar localmente, rodar testes e guidelines de PR.
 
-Part of my build-in-public journey: learning AI + coding from scratch and documenting everything — mistakes included.
-
-## License
+## Licença
 
 MIT
