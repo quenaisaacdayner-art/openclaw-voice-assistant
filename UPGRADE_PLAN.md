@@ -2,7 +2,7 @@
 
 > Atualizado: 18/03/2026
 > Status: PENDENTE — executar fase por fase com commit entre cada uma
-> Testes: 129 existentes são o guardrail — rodar após cada fase
+> Testes: 246 existentes são o guardrail — rodar após cada fase
 
 ## Contexto
 
@@ -10,11 +10,27 @@ Temos 3 scripts (CLI 305L, Web 661L, VPS 558L) com ~400 linhas duplicadas.
 O código funciona, mas toda melhoria precisa ser feita 2-3x.
 Antes de adicionar features, unificar a base. Depois, melhorar.
 
+### Cobertura de testes atual (246 testes)
+
+| Arquivo | Testes | Cobre |
+|---------|--------|-------|
+| `test_cli.py` | 32 | CLI: defaults, mic, token, transcribe, ask_openclaw, speak, record, play |
+| `test_cli_extended.py` | 22 | CLI: mic keywords, API errors, speak_piper/edge, play_audio Linux, token edge cases |
+| `test_web.py` | 23 | Web: config, PyAudio mic, Piper/Edge TTS, ContinuousListener, respond_text/audio |
+| `test_web_extended.py` | 25 | Web: _get_whisper lazy loading, generate_tts wrapper, toggle/poll, streaming fallbacks |
+| `test_vps.py` | 22 | VPS: config, BrowserContinuousListener, TTS, toggle, stream chunks |
+| `test_vps_extended.py` | 28 | VPS: handle_stop_recording, respond_text/audio, _transcribe_buffer, ask_openclaw errors |
+| `test_shared_logic.py` | 17 | SSE parser, _find_sentence_end, build_api_history, transcribe_audio |
+| `test_code_duplication.py` | 17 | Inventário: quais funções existem em quais arquivos, deps, model |
+| `test_bugs_documented.py` | 30 | Testes que PASSAM com os bugs atuais — servem de alarme quando corrigidos |
+
 ---
 
-## FASE 1: Unificação — 3 scripts → core compartilhado (~2h)
+## FASE 1: Unificação — 3 scripts → core compartilhado (~4-6h)
 
 **Por quê:** sem isso, todo bug fix e feature nova precisa ser replicado em 3 arquivos.
+
+**Por que ~4-6h e não ~2h:** os 246 testes importam `voice_assistant`, `voice_assistant_web`, `voice_assistant_vps` diretamente — todos os imports e mocks precisam ser adaptados. Além disso, web e VPS têm diferenças sutis no streaming (web faz `yield` com 3 outputs, VPS com 2) e o `handle_stream_chunk` do VPS acopla buffer no `continuous_listener` — esse acoplamento precisa ser desfeito.
 
 ### Estrutura alvo
 
@@ -40,6 +56,16 @@ voice_assistant_app.py   — Gradio unificado (detecta local vs VPS automaticame
 | Qual gateway? | `OPENCLAW_GATEWAY_URL` env var | Padrão: localhost:18789 |
 | Piper disponível? | Tenta importar + checa modelo | Sim → Piper, Não → Edge TTS |
 
+### Decisões de unificação que a Fase 1 resolve automaticamente
+
+Estas inconsistências entre scripts deixam de existir quando há uma só implementação:
+
+| Inconsistência atual | Resolve na unificação |
+|---|---|
+| CLI `ask_openclaw(text, token, history)` vs Web/VPS `ask_openclaw(text, history_messages)` | Uma assinatura só no `core/llm.py` |
+| CLI retorna `None` em erro vs Web/VPS retornam string `"❌..."` | Um padrão de erro só |
+| `ask_openclaw_stream` propaga exceções HTTP sem catch interno | Um handler só com tratamento consistente |
+
 ### Regra
 
 - Zero duplicação de lógica
@@ -52,24 +78,36 @@ voice_assistant_app.py   — Gradio unificado (detecta local vs VPS automaticame
 - [ ] `python voice_assistant_app.py` funciona na VPS (mic browser, gateway VPS)
 - [ ] `OPENCLAW_GATEWAY_URL=... python voice_assistant_app.py` conecta em gateway remoto
 - [ ] `python voice_assistant_cli.py` funciona igual ao CLI atual
-- [ ] 129 testes passam (adaptar imports)
+- [ ] 246 testes passam (adaptar imports)
 
 ---
 
-## FASE 2: Corrigir bugs conhecidos (~30min)
+## FASE 2: Corrigir bugs conhecidos (~1h)
 
-4 bugs documentados nos testes. Corrigir no core unificado = corrigido em tudo.
+8 bugs/quirks documentados em `test_bugs_documented.py`. Corrigir no core unificado = corrigido em tudo.
+
+### Bugs que precisam de fix manual (não resolvidos pela unificação)
 
 | Bug | Onde | Fix |
 |-----|------|-----|
 | `PortAudioError.__str__()` retorna int → crash no print | `cli.py` / `record_audio` | `str(e)` no f-string |
 | `MIN_SPEECH_CHUNKS` conta silêncio no buffer | `BrowserContinuousListener` | Contador separado `speech_chunk_count` |
-| `build_api_history` filtra `[🎤` → voz não vai pro contexto | `history.py` | Filtrar o prefixo, manter o conteúdo |
-| `MAX_HISTORY` inconsistente (local vs módulo) | `history.py` | Constante no core |
+| `build_api_history` filtra `[🎤` → voz não vai pro contexto | `core/history.py` | Filtrar o prefixo `[🎤 Voz]: `, manter o conteúdo |
+| `_find_sentence_end` não detecta pontuação no fim da string | `core/llm.py` | Regex `[.!?…](\s\|$)` em vez de `[.!?…]\s` |
+| `generate_tts` só filtra `"❌"` no início do texto | `core/tts.py` | Verificar se `"❌"` aparece em qualquer posição, ou manter e documentar como intencional |
+
+### Bugs que a Fase 1 já resolve (pela unificação)
+
+| Bug | Por que resolve |
+|-----|----------------|
+| `MAX_HISTORY` inconsistente (local var CLI vs module const Web/VPS) | Constante única no `core/history.py` |
+| `ask_openclaw` assinaturas diferentes entre scripts | Uma implementação só no `core/llm.py` |
+| CLI retorna `None` em erro vs Web/VPS retornam string `"❌..."` | Um padrão de retorno só |
 
 ### Critério de sucesso
 
-- [ ] 129 testes adaptados pra refletir behavior correto (não mais "documenta bug")
+- [ ] 246 testes adaptados pra refletir behavior correto (não mais "documenta bug")
+- [ ] `test_bugs_documented.py` reescrito: testes agora verificam comportamento CORRETO
 - [ ] Todos passam
 
 ---
@@ -92,36 +130,7 @@ voice_assistant_app.py   — Gradio unificado (detecta local vs VPS automaticame
 
 ---
 
-## FASE 4: Tunnel SSH automático (~1h)
-
-**Por quê:** hoje precisa abrir terminal separado pra tunnel. Quem clona o repo não sabe fazer isso.
-
-### Implementação
-
-```bash
-# Hoje (2 terminais):
-ssh -N -L 19792:127.0.0.1:19792 root@31.97.171.12   # terminal 1
-python voice_assistant_vps.py                          # terminal 2
-
-# Depois (1 comando):
-python voice_assistant_app.py --gateway ssh://root@31.97.171.12:19789
-```
-
-O script:
-1. Detecta `ssh://` no gateway URL
-2. Abre tunnel SSH em subprocess (background)
-3. Conecta no gateway via localhost
-4. Fecha tunnel quando o script encerra
-
-### Critério de sucesso
-
-- [ ] `--gateway ssh://user@host:port` abre tunnel automaticamente
-- [ ] Ctrl+C mata o tunnel junto com o script
-- [ ] Sem `ssh://` funciona igual (conexão direta)
-
----
-
-## FASE 5: Interface melhorada (~1h)
+## FASE 4: Interface melhorada (~1h)
 
 | Melhoria | Impacto | Complexidade |
 |----------|---------|--------------|
@@ -138,7 +147,7 @@ O script:
 
 ---
 
-## FASE 6: Latência (~1h)
+## FASE 5: Latência (~1h)
 
 | Melhoria | Ganho esperado | Como |
 |----------|---------------|------|
@@ -154,7 +163,7 @@ O script:
 
 ---
 
-## FASE 7: Voz melhor — Kokoro TTS (~30min)
+## FASE 6: Voz melhor — Kokoro TTS (~30min)
 
 | Engine | Qualidade | Latência | Custo | Local? |
 |--------|-----------|----------|-------|--------|
@@ -171,11 +180,11 @@ Testar Kokoro como TTS padrão. Se PT-BR não for bom → manter Edge.
 
 ---
 
-## FASE 8: Open Source / DX (~1h)
+## FASE 7: Open Source / DX (~1h)
 
 | Item | Ação |
 |------|------|
-| README | Reescrever: instalação, 4 modos de uso, screenshots, GIF de demo |
+| README | Reescrever: instalação, modos de uso, screenshots, GIF de demo |
 | `.env.example` | Todas as variáveis documentadas |
 | Docker | `Dockerfile` + `docker-compose.yml` (rodar em 1 comando) |
 | CI | GitHub Actions rodando os testes em push/PR |
@@ -190,23 +199,40 @@ Testar Kokoro como TTS padrão. Se PT-BR não for bom → manter Edge.
 
 ---
 
+## NICE-TO-HAVE: Tunnel SSH automático
+
+> Rebaixado de fase obrigatória. O custo (subprocess management, signal handlers, cross-platform) é desproporcional ao valor. Um `scripts/connect.sh` de 5 linhas resolve 80%.
+
+```bash
+# scripts/connect.sh
+#!/bin/bash
+ssh -N -L ${1:-19789}:127.0.0.1:${1:-19789} ${2:-root@31.97.171.12} &
+SSH_PID=$!
+trap "kill $SSH_PID 2>/dev/null" EXIT
+python voice_assistant_app.py --gateway http://127.0.0.1:${1:-19789}/v1/chat/completions
+```
+
+Se depois houver demanda, promover a fase completa com `--gateway ssh://user@host:port`.
+
+---
+
 ## Ordem de execução
 
 ```
-FASE 1 (Unificação) ← base pra tudo
+FASE 1 (Unificação)  ← base pra tudo [~4-6h]
   ↓
-FASE 2 (Bugs) ← agora é 1 lugar, não 3
+FASE 2 (Bugs)        ← agora é 1 lugar, não 3 [~1h]
   ↓
-FASE 3 (Limpeza) ← repo profissional
+FASE 3 (Limpeza)     ← repo profissional [~30min]
   ↓
-FASE 4-7 (Features) ← ordem flexível, cada uma independente
+FASE 4-6 (Features)  ← ordem flexível, cada uma independente
   ↓
-FASE 8 (Open Source) ← polimento final
+FASE 7 (Open Source)  ← polimento final
 ```
 
 ## Regra geral
 
 - Commit após cada fase completa
-- Testes rodam após cada fase
+- Testes rodam após cada fase (246 testes = guardrail)
 - Se uma fase trava por 30+ min → parar, commitar o que tem, seguir pra próxima
 - Claude Code executa, Dayner revisa

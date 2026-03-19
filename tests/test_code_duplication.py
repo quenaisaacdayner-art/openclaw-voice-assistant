@@ -1,7 +1,6 @@
-"""Tests documenting code duplication across the 3 scripts.
+"""Tests verifying core/ is the single source of truth.
 
-These tests verify that all 3 versions implement the same core behaviors,
-even though they're copy-pasted. NOT fixing this — just documenting it.
+After unification, all shared logic lives in core/ and scripts import from it.
 """
 import os
 import sys
@@ -19,7 +18,6 @@ def _read_file(name):
 
 
 def _get_function_names(source):
-    """Extract all top-level and class-method function names from source."""
     tree = ast.parse(source)
     names = set()
     for node in ast.walk(tree):
@@ -28,133 +26,165 @@ def _get_function_names(source):
     return names
 
 
-class TestDuplication:
-    """Document which functions exist in which files."""
+def _get_imports(source):
+    """Extract import sources from source code."""
+    tree = ast.parse(source)
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+    return imports
 
-    def test_all_three_have_load_token(self):
-        for name in ["voice_assistant.py", "voice_assistant_web.py", "voice_assistant_vps.py"]:
-            source = _read_file(name)
-            fns = _get_function_names(source)
-            assert "load_token" in fns, f"{name} missing load_token"
 
-    def test_all_three_have_ask_openclaw(self):
-        for name in ["voice_assistant.py", "voice_assistant_web.py", "voice_assistant_vps.py"]:
-            source = _read_file(name)
-            fns = _get_function_names(source)
-            assert "ask_openclaw" in fns, f"{name} missing ask_openclaw"
+# ─── Core has all shared functions ──────────────────────────────────────────
 
-    def test_streaming_only_in_web_and_vps(self):
-        """CLI version does NOT have streaming — web and VPS do."""
-        cli = _get_function_names(_read_file("voice_assistant.py"))
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
+class TestCoreIsSource:
+    """Verify core/ contains all the shared functions."""
 
-        assert "ask_openclaw_stream" not in cli
-        assert "ask_openclaw_stream" in web
-        assert "ask_openclaw_stream" in vps
+    def test_core_config_has_load_token(self):
+        source = _read_file(os.path.join("core", "config.py"))
+        fns = _get_function_names(source)
+        assert "load_token" in fns
 
-    def test_cli_has_unique_functions(self):
-        """CLI has record_audio and play_audio (not in web/vps)."""
-        cli = _get_function_names(_read_file("voice_assistant.py"))
-        assert "record_audio" in cli
-        assert "play_audio" in cli
+    def test_core_stt_has_transcribe_audio(self):
+        source = _read_file(os.path.join("core", "stt.py"))
+        fns = _get_function_names(source)
+        assert "transcribe_audio" in fns
+        assert "_get_whisper" in fns
 
-    def test_web_has_realtime_stt_listener(self):
-        source = _read_file("voice_assistant_web.py")
-        assert "ContinuousListener" in source
-        assert "REALTIME_STT_AVAILABLE" in source
+    def test_core_tts_has_generate_tts(self):
+        source = _read_file(os.path.join("core", "tts.py"))
+        fns = _get_function_names(source)
+        assert "generate_tts" in fns
+        assert "generate_tts_piper" in fns
+        assert "generate_tts_edge" in fns
+        assert "init_piper" in fns
 
-    def test_vps_has_browser_listener(self):
-        source = _read_file("voice_assistant_vps.py")
-        assert "BrowserContinuousListener" in source
+    def test_core_llm_has_ask_openclaw(self):
+        source = _read_file(os.path.join("core", "llm.py"))
+        fns = _get_function_names(source)
+        assert "ask_openclaw" in fns
+        assert "ask_openclaw_stream" in fns
+        assert "_find_sentence_end" in fns
 
-    def test_web_and_vps_both_have_build_api_history(self):
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
-        assert "build_api_history" in web
-        assert "build_api_history" in vps
+    def test_core_history_has_build_api_history(self):
+        source = _read_file(os.path.join("core", "history.py"))
+        fns = _get_function_names(source)
+        assert "build_api_history" in fns
 
-    def test_web_and_vps_both_have_respond_text(self):
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
-        assert "respond_text" in web
-        assert "respond_text" in vps
+    def test_core_config_has_constants(self):
+        source = _read_file(os.path.join("core", "config.py"))
+        for const in ["GATEWAY_URL", "MODEL", "TTS_VOICE", "WHISPER_MODEL_SIZE", "TTS_ENGINE", "PIPER_MODEL"]:
+            assert const in source, f"Missing constant: {const}"
 
-    def test_web_and_vps_both_have_respond_audio(self):
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
-        assert "respond_audio" in web
-        assert "respond_audio" in vps
 
-    def test_web_and_vps_both_have_transcribe_audio(self):
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
-        assert "transcribe_audio" in web
-        assert "transcribe_audio" in vps
+# ─── Scripts import from core ──────────────────────────────────────────────
 
-    def test_web_and_vps_both_have_find_sentence_end(self):
-        web = _get_function_names(_read_file("voice_assistant_web.py"))
-        vps = _get_function_names(_read_file("voice_assistant_vps.py"))
-        assert "_find_sentence_end" in web
-        assert "_find_sentence_end" in vps
+class TestScriptsImportFromCore:
+    """Verify CLI and App import from core/, not reimplementing."""
 
-    def test_gateway_url_differs(self):
-        """CLI and web use 18789, VPS uses 19789."""
-        cli = _read_file("voice_assistant.py")
-        web = _read_file("voice_assistant_web.py")
-        vps = _read_file("voice_assistant_vps.py")
+    def test_cli_imports_from_core(self):
+        source = _read_file("voice_assistant_cli.py")
+        imports = _get_imports(source)
+        assert "core.config" in imports
+        assert "core.stt" in imports
+        assert "core.llm" in imports
+        assert "core.tts" in imports
 
-        assert "18789" in cli
-        assert "18789" in web
-        assert "19789" in vps
+    def test_app_imports_from_core(self):
+        source = _read_file("voice_assistant_app.py")
+        imports = _get_imports(source)
+        assert "core.config" in imports
+        assert "core.stt" in imports
+        assert "core.llm" in imports
+        assert "core.tts" in imports
+        assert "core.history" in imports
 
-    def test_tts_engines_differ(self):
-        """CLI and web support Piper + Edge. VPS is Edge only."""
-        cli = _read_file("voice_assistant.py")
-        web = _read_file("voice_assistant_web.py")
-        vps = _read_file("voice_assistant_vps.py")
+    def test_cli_does_not_redefine_shared_functions(self):
+        """CLI should NOT have its own ask_openclaw, generate_tts, etc."""
+        source = _read_file("voice_assistant_cli.py")
+        fns = _get_function_names(source)
+        for fn in ["ask_openclaw", "generate_tts", "load_token", "transcribe_audio"]:
+            assert fn not in fns, f"CLI redefines {fn} — should import from core/"
 
-        assert "PIPER_AVAILABLE" in cli
-        assert "PIPER_AVAILABLE" in web
-        assert "PIPER_AVAILABLE" not in vps
+    def test_app_does_not_redefine_shared_functions(self):
+        """App should NOT have its own ask_openclaw, transcribe_audio, etc."""
+        source = _read_file("voice_assistant_app.py")
+        fns = _get_function_names(source)
+        for fn in ["ask_openclaw", "ask_openclaw_stream", "generate_tts",
+                    "load_token", "transcribe_audio", "_get_whisper",
+                    "build_api_history", "_find_sentence_end"]:
+            assert fn not in fns, f"App redefines {fn} — should import from core/"
 
-    def test_piper_model_committed_in_repo(self):
-        """63MB Piper model is in the repo — documenting this fact."""
-        model_path = os.path.join(PROJECT_ROOT, "models", "pt_BR-faber-medium.onnx")
-        assert os.path.exists(model_path)
-        size_mb = os.path.getsize(model_path) / (1024 * 1024)
-        assert size_mb > 50  # It's ~60MB
 
+# ─── App has both listener classes ──────────────────────────────────────────
+
+class TestAppListeners:
+    def test_app_has_continuous_listener(self):
+        source = _read_file("voice_assistant_app.py")
+        assert "class ContinuousListener" in source
+
+    def test_app_has_browser_continuous_listener(self):
+        source = _read_file("voice_assistant_app.py")
+        assert "class BrowserContinuousListener" in source
+
+    def test_app_has_respond_text(self):
+        source = _read_file("voice_assistant_app.py")
+        fns = _get_function_names(source)
+        assert "respond_text" in fns
+
+    def test_app_has_respond_audio(self):
+        source = _read_file("voice_assistant_app.py")
+        fns = _get_function_names(source)
+        assert "respond_audio" in fns
+
+
+# ─── Unified ask_openclaw signature ────────────────────────────────────────
+
+class TestUnifiedSignatures:
+    def test_core_ask_openclaw_has_token_param(self):
+        source = _read_file(os.path.join("core", "llm.py"))
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "ask_openclaw":
+                arg_names = [a.arg for a in node.args.args]
+                assert "text" in arg_names
+                assert "token" in arg_names
+                assert "history_messages" in arg_names
+                break
+
+    def test_core_ask_openclaw_stream_has_token_param(self):
+        source = _read_file(os.path.join("core", "llm.py"))
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "ask_openclaw_stream":
+                arg_names = [a.arg for a in node.args.args]
+                assert "token" in arg_names
+                break
+
+
+# ─── File inventory ────────────────────────────────────────────────────────
 
 class TestFileInventory:
-    """Document what files exist and their sizes."""
+    def test_core_package_exists(self):
+        core_dir = os.path.join(PROJECT_ROOT, "core")
+        assert os.path.isdir(core_dir)
+        for name in ["__init__.py", "config.py", "stt.py", "tts.py", "llm.py", "history.py"]:
+            assert os.path.exists(os.path.join(core_dir, name)), f"Missing core/{name}"
 
-    def test_three_main_scripts(self):
-        for name in ["voice_assistant.py", "voice_assistant_web.py", "voice_assistant_vps.py"]:
-            path = os.path.join(PROJECT_ROOT, name)
-            assert os.path.exists(path), f"Missing: {name}"
+    def test_unified_app_exists(self):
+        assert os.path.exists(os.path.join(PROJECT_ROOT, "voice_assistant_app.py"))
 
-    def test_teste_tts_exists(self):
-        """Diagnostic script exists in repo."""
-        assert os.path.exists(os.path.join(PROJECT_ROOT, "teste_tts.py"))
+    def test_cli_exists(self):
+        assert os.path.exists(os.path.join(PROJECT_ROOT, "voice_assistant_cli.py"))
 
-    def test_upgrade_plan_exists(self):
-        assert os.path.exists(os.path.join(PROJECT_ROOT, "UPGRADE_PLAN.md"))
+    def test_old_scripts_still_exist(self):
+        """Old scripts should NOT be deleted (per instructions)."""
+        for name in ["voice_assistant_web.py", "voice_assistant_vps.py"]:
+            assert os.path.exists(os.path.join(PROJECT_ROOT, name)), f"Old script {name} should still exist"
 
     def test_requirements_has_all_deps(self):
         with open(os.path.join(PROJECT_ROOT, "requirements.txt")) as f:
             content = f.read()
         for dep in ["faster-whisper", "edge-tts", "numpy", "requests", "gradio", "scipy"]:
             assert dep in content, f"Missing dependency: {dep}"
-
-    def test_requirements_includes_realtime_stt(self):
-        """RealtimeSTT is in requirements even though it only works locally."""
-        with open(os.path.join(PROJECT_ROOT, "requirements.txt")) as f:
-            content = f.read()
-        assert "RealtimeSTT" in content
-
-    def test_requirements_includes_pyaudio(self):
-        """PyAudio is in requirements even though VPS doesn't need it."""
-        with open(os.path.join(PROJECT_ROOT, "requirements.txt")) as f:
-            content = f.read()
-        assert "PyAudio" in content
