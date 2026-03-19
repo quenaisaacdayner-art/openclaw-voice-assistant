@@ -8,6 +8,7 @@ Stack: faster-whisper (STT) + Piper/Edge TTS + OpenClaw Gateway (LLM) + Gradio (
 import os
 import threading
 import queue
+import concurrent.futures
 
 import numpy as np
 import gradio as gr
@@ -51,6 +52,9 @@ print(f"🔧 Modo detectado: {MODE}")
 TOKEN = load_token()
 print("✅ Token carregado")
 init_piper()
+
+# ─── TTS Thread Pool (buffer duplo: gera TTS em background enquanto LLM streama) ──
+_tts_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 # ─── Server config ────────────────────────────────────────────────────────────
 
@@ -308,7 +312,10 @@ else:
 # ─── Chat Logic (shared) ─────────────────────────────────────────────────────
 
 def respond_text(user_message, chat_history):
-    """Handle text input with streaming response and sentence-based TTS."""
+    """Handle text input with streaming response and sentence-based TTS.
+
+    Buffer duplo: gera TTS da frase N+1 em background enquanto frase N toca.
+    """
     if not user_message or not user_message.strip():
         yield "", chat_history, None, STATUS_IDLE
         return
@@ -318,9 +325,10 @@ def respond_text(user_message, chat_history):
     api_history = build_api_history(chat_history[:-1])
 
     full_response = ""
-    first_tts_done = False
-    first_tts_end = 0
+    last_tts_end = 0
     audio = None
+    tts_future = None
+    tts_end_pos = 0
 
     yield "", chat_history, None, STATUS_THINKING
 
@@ -329,21 +337,39 @@ def respond_text(user_message, chat_history):
             full_response = partial
             updated = chat_history + [{"role": "assistant", "content": partial}]
 
-            if not first_tts_done:
-                end = _find_sentence_end(partial)
+            # Se TTS em background ficou pronto, emitir áudio
+            if tts_future and tts_future.done():
+                result = tts_future.result()
+                if result:
+                    audio = result
+                    last_tts_end = tts_end_pos
+                tts_future = None
+                yield "", updated, audio, STATUS_SPEAKING
+                continue
+
+            # Procurar nova frase pra gerar TTS em background
+            if not tts_future:
+                remaining = partial[last_tts_end:]
+                end = _find_sentence_end(remaining)
                 if end > 0:
-                    audio = generate_tts(partial[:end].strip())
-                    if audio:
-                        first_tts_done = True
-                        first_tts_end = end
-                        yield "", updated, audio, STATUS_SPEAKING
-                        continue
+                    sentence = remaining[:end].strip()
+                    if sentence:
+                        tts_future = _tts_executor.submit(generate_tts, sentence)
+                        tts_end_pos = last_tts_end + end
 
             yield "", updated, audio, STATUS_THINKING
 
+        # Aguardar TTS pendente
+        if tts_future:
+            result = tts_future.result(timeout=30)
+            if result:
+                audio = result
+                last_tts_end = tts_end_pos
+            tts_future = None
+
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
-            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            remaining = full_response[last_tts_end:].strip()
             if remaining:
                 final_audio = generate_tts(remaining)
                 if final_audio:
@@ -363,7 +389,10 @@ def respond_text(user_message, chat_history):
 
 
 def respond_audio(audio_input, chat_history):
-    """Handle audio input with streaming response and sentence-based TTS."""
+    """Handle audio input with streaming response and sentence-based TTS.
+
+    Buffer duplo: gera TTS da frase N+1 em background enquanto frase N toca.
+    """
     if audio_input is None:
         yield chat_history, None, STATUS_IDLE
         return
@@ -381,30 +410,46 @@ def respond_audio(audio_input, chat_history):
     api_history = build_api_history(chat_history[:-1])
 
     full_response = ""
-    first_tts_done = False
-    first_tts_end = 0
+    last_tts_end = 0
     audio = None
+    tts_future = None
+    tts_end_pos = 0
 
     try:
         for partial in ask_openclaw_stream(text, TOKEN, api_history):
             full_response = partial
             updated = chat_history + [{"role": "assistant", "content": partial}]
 
-            if not first_tts_done:
-                end = _find_sentence_end(partial)
+            if tts_future and tts_future.done():
+                result = tts_future.result()
+                if result:
+                    audio = result
+                    last_tts_end = tts_end_pos
+                tts_future = None
+                yield updated, audio, STATUS_SPEAKING
+                continue
+
+            if not tts_future:
+                remaining = partial[last_tts_end:]
+                end = _find_sentence_end(remaining)
                 if end > 0:
-                    audio = generate_tts(partial[:end].strip())
-                    if audio:
-                        first_tts_done = True
-                        first_tts_end = end
-                        yield updated, audio, STATUS_SPEAKING
-                        continue
+                    sentence = remaining[:end].strip()
+                    if sentence:
+                        tts_future = _tts_executor.submit(generate_tts, sentence)
+                        tts_end_pos = last_tts_end + end
 
             yield updated, audio, STATUS_THINKING
 
+        if tts_future:
+            result = tts_future.result(timeout=30)
+            if result:
+                audio = result
+                last_tts_end = tts_end_pos
+            tts_future = None
+
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
-            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            remaining = full_response[last_tts_end:].strip()
             if remaining:
                 final_audio = generate_tts(remaining)
                 if final_audio:
@@ -424,35 +469,54 @@ def respond_audio(audio_input, chat_history):
 
 
 def _process_voice_text(text, chat_history):
-    """Process already-transcribed voice text through LLM + TTS. Yields (chat_history, audio, status)."""
+    """Process already-transcribed voice text through LLM + TTS. Yields (chat_history, audio, status).
+
+    Buffer duplo: gera TTS da frase N+1 em background enquanto frase N toca.
+    """
     chat_history = chat_history + [{"role": "user", "content": f"[🎤 Voz]: {text}"}]
     api_history = build_api_history(chat_history[:-1])
 
     full_response = ""
-    first_tts_done = False
-    first_tts_end = 0
+    last_tts_end = 0
     audio = None
+    tts_future = None
+    tts_end_pos = 0
 
     try:
         for partial in ask_openclaw_stream(text, TOKEN, api_history):
             full_response = partial
             updated = chat_history + [{"role": "assistant", "content": partial}]
 
-            if not first_tts_done:
-                end = _find_sentence_end(partial)
+            if tts_future and tts_future.done():
+                result = tts_future.result()
+                if result:
+                    audio = result
+                    last_tts_end = tts_end_pos
+                tts_future = None
+                yield updated, audio, STATUS_SPEAKING
+                continue
+
+            if not tts_future:
+                remaining = partial[last_tts_end:]
+                end = _find_sentence_end(remaining)
                 if end > 0:
-                    audio = generate_tts(partial[:end].strip())
-                    if audio:
-                        first_tts_done = True
-                        first_tts_end = end
-                        yield updated, audio, STATUS_SPEAKING
-                        continue
+                    sentence = remaining[:end].strip()
+                    if sentence:
+                        tts_future = _tts_executor.submit(generate_tts, sentence)
+                        tts_end_pos = last_tts_end + end
 
             yield updated, audio, STATUS_THINKING
 
+        if tts_future:
+            result = tts_future.result(timeout=30)
+            if result:
+                audio = result
+                last_tts_end = tts_end_pos
+            tts_future = None
+
         if full_response:
             final = chat_history + [{"role": "assistant", "content": full_response}]
-            remaining = full_response[first_tts_end:].strip() if first_tts_done else full_response
+            remaining = full_response[last_tts_end:].strip()
             if remaining:
                 final_audio = generate_tts(remaining)
                 if final_audio:
