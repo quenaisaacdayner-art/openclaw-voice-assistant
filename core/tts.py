@@ -1,14 +1,19 @@
 """Text-to-Speech — Piper (local) + Edge TTS (online) com fallback automático."""
 
 import os
+import sys
 import wave
 import asyncio
 import tempfile
 import concurrent.futures
 
+import requests
 import edge_tts
 
 from core.config import TTS_ENGINE, TTS_VOICE, PIPER_MODEL
+
+PIPER_MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx"
+PIPER_MODEL_JSON_URL = PIPER_MODEL_URL + ".json"
 
 # Piper TTS (local, importado condicionalmente)
 try:
@@ -23,9 +28,37 @@ _previous_tts_file = None
 _tts_engine = TTS_ENGINE  # cópia mutável (pode mudar se Piper indisponível)
 
 
+def download_piper_model():
+    """Baixa modelo Piper se não existe localmente. Mostra progresso."""
+    model_dir = os.path.dirname(PIPER_MODEL)
+    os.makedirs(model_dir, exist_ok=True)
+
+    for url, path in [(PIPER_MODEL_URL, PIPER_MODEL),
+                      (PIPER_MODEL_JSON_URL, PIPER_MODEL + ".json")]:
+        if os.path.exists(path):
+            continue
+        filename = os.path.basename(path)
+        print(f"⬇️  Baixando {filename}...")
+        resp = requests.get(url, stream=True, timeout=120)
+        resp.raise_for_status()
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    pct = downloaded * 100 // total
+                    print(f"\r   {pct}% ({downloaded}/{total} bytes)", end="", flush=True)
+        print(f"\n✅ {filename} baixado")
+
+
 def init_piper():
     """Carrega modelo Piper se disponível. Retorna True se carregou."""
     global piper_voice, _tts_engine
+
+    if _tts_engine == "piper" and PIPER_AVAILABLE:
+        download_piper_model()
 
     if _tts_engine == "piper" and PIPER_AVAILABLE and os.path.exists(PIPER_MODEL):
         print(f"⏳ Carregando Piper TTS ({os.path.basename(PIPER_MODEL)})...")

@@ -1,9 +1,7 @@
 faster-whisper
 edge-tts
-sounddevice
-numpy
 requests
 gradio
 scipy
-RealtimeSTT
-PyAudio
+numpy
+sounddevice

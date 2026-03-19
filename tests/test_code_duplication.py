@@ -178,10 +178,10 @@ class TestFileInventory:
     def test_cli_exists(self):
         assert os.path.exists(os.path.join(PROJECT_ROOT, "voice_assistant_cli.py"))
 
-    def test_old_scripts_still_exist(self):
-        """Old scripts should NOT be deleted (per instructions)."""
-        for name in ["voice_assistant_web.py", "voice_assistant_vps.py"]:
-            assert os.path.exists(os.path.join(PROJECT_ROOT, name)), f"Old script {name} should still exist"
+    def test_old_scripts_removed(self):
+        """Old scripts were removed in Fase 3 — only unified app and CLI remain."""
+        for name in ["voice_assistant.py", "voice_assistant_web.py", "voice_assistant_vps.py"]:
+            assert not os.path.exists(os.path.join(PROJECT_ROOT, name)), f"Old script {name} should have been removed"
 
     def test_requirements_has_all_deps(self):
         with open(os.path.join(PROJECT_ROOT, "requirements.txt")) as f:
