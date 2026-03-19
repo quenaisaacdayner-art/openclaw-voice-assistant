@@ -62,6 +62,29 @@ def ask_openclaw_stream(text, token, history_messages):
 
 
 def _find_sentence_end(text):
-    """Posição após primeira pontuação de fim de frase seguida de espaço ou fim da string."""
+    """Encontra ponto de split pra TTS em texto parcial do LLM.
+
+    Prioridade:
+    1. Pontuação forte (.!?…) seguida de espaço ou fim
+    2. Ponto-e-vírgula ou dois-pontos seguidos de espaço
+    3. Vírgula seguida de espaço (só se texto > 80 chars — evita splits muito curtos)
+
+    Retorna posição APÓS o separador (incluindo o espaço). 0 se não encontrou.
+    """
+    # Prioridade 1: pontuação forte
     m = re.search(r'[.!?…](\s|$)', text)
-    return m.end() if m else 0
+    if m:
+        return m.end()
+
+    # Prioridade 2: ponto-e-vírgula, dois-pontos
+    m = re.search(r'[;:](\s|$)', text)
+    if m:
+        return m.end()
+
+    # Prioridade 3: vírgula (só se texto longo o suficiente)
+    if len(text) > 80:
+        m = re.search(r',\s', text)
+        if m:
+            return m.end()
+
+    return 0

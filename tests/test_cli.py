@@ -25,13 +25,13 @@ class TestDefaults:
         assert config.GATEWAY_URL.endswith("/v1/chat/completions")
 
     def test_default_model(self):
-        assert config.MODEL == "openclaw:main"
+        assert config.MODEL == "anthropic/claude-sonnet-4-6"
 
     def test_default_tts_voice(self):
         assert config.TTS_VOICE == "pt-BR-AntonioNeural"
 
     def test_default_whisper_model(self):
-        assert config.WHISPER_MODEL_SIZE == "small"
+        assert config.WHISPER_MODEL_SIZE == "tiny"
 
     def test_sample_rate(self):
         assert cli.SAMPLE_RATE == 16000

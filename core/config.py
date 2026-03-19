@@ -10,9 +10,9 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATEWAY_URL = os.environ.get(
     "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789/v1/chat/completions"
 )
-MODEL = os.environ.get("OPENCLAW_MODEL", "openclaw:main")
+MODEL = os.environ.get("OPENCLAW_MODEL", "anthropic/claude-sonnet-4-6")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper", "edge" ou "kokoro"
 PIPER_MODEL = os.path.join(PROJECT_DIR, "models", "pt_BR-faber-medium.onnx")
 
