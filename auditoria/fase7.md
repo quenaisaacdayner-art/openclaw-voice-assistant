@@ -1,7 +1,7 @@
 # Registro — Fase 7: Open Source / DX
 
 > Executada: 19/03/2026 ~01:30 BRT
-> Commit: (será preenchido após commit)
+> Commit: d08e599
 
 ## Resultado dos Testes
 
@@ -41,4 +41,12 @@ Nenhum — execução direta sem erros.
 
 ## Diff total
 
-(será preenchido após commit)
+```
+ .env.example               |  37 +++++++++
+ .github/workflows/test.yml |  28 +++++++
+ CONTRIBUTING.md            |  65 ++++++++++++++++
+ README.md                  | 189 +++++++++++++++++++++------------------------
+ auditoria/fase7.md         |  44 +++++++++++
+ scripts/connect.sh         |   7 ++
+ 6 files changed, 370 insertions(+), 99 deletions(-)
+```
