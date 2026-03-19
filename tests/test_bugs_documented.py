@@ -1,10 +1,7 @@
-"""Tests that explicitly document known bugs and behavioral quirks.
+"""Tests for bugs that were fixed in Fase 2.
 
-These tests PASS with the current buggy behavior. They exist so that
-if someone fixes a bug, these tests will FAIL — signaling a deliberate
-behavioral change that needs review.
-
-After unification, bugs are in core/ and voice_assistant_app.py.
+These tests verify the CORRECT behavior after fixes.
+Previously they documented buggy behavior — now they confirm the fixes work.
 """
 import os
 import sys
@@ -32,24 +29,22 @@ def _import_app():
             return mod
 
 
-# ─── BUG 1: Voice messages excluded from LLM context ────────────────────────
+# ─── FIX 1: Voice messages INCLUDED in LLM context ────────────────────────
 
-class TestBugVoiceMessagesExcluded:
-    """build_api_history filters out messages starting with '[🎤'.
-    This means ALL voice-transcribed user messages are excluded from the
-    API context sent to the LLM.
-    """
+class TestFixVoiceMessagesIncluded:
+    """build_api_history now strips the '[🎤 Voz]: ' prefix but keeps the content."""
 
-    def test_voice_user_message_excluded_from_api_context(self):
+    def test_voice_user_message_included_in_api_context(self):
         history = [
             {"role": "user", "content": "[🎤 Voz]: qual é a previsão do tempo?"},
             {"role": "assistant", "content": "Está ensolarado hoje."},
         ]
         api_messages = core.history.build_api_history(history)
         user_msgs = [m for m in api_messages if m["role"] == "user"]
-        assert len(user_msgs) == 0
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["content"] == "qual é a previsão do tempo?"
 
-    def test_mixed_voice_and_text_only_text_sent(self):
+    def test_mixed_voice_and_text_both_sent(self):
         history = [
             {"role": "user", "content": "[🎤 Voz]: olá"},
             {"role": "assistant", "content": "oi!"},
@@ -60,10 +55,12 @@ class TestBugVoiceMessagesExcluded:
         ]
         api_messages = core.history.build_api_history(history)
         user_msgs = [m for m in api_messages if m["role"] == "user"]
-        assert len(user_msgs) == 1
-        assert user_msgs[0]["content"] == "como vai?"
+        assert len(user_msgs) == 3
+        assert user_msgs[0]["content"] == "olá"
+        assert user_msgs[1]["content"] == "como vai?"
+        assert user_msgs[2]["content"] == "tchau"
 
-    def test_all_voice_conversation_sends_no_user_context(self):
+    def test_all_voice_conversation_sends_all_user_context(self):
         history = [
             {"role": "user", "content": "[🎤 Voz]: primeira pergunta"},
             {"role": "assistant", "content": "primeira resposta"},
@@ -72,16 +69,27 @@ class TestBugVoiceMessagesExcluded:
         ]
         api_messages = core.history.build_api_history(history)
         user_msgs = [m for m in api_messages if m["role"] == "user"]
-        assert len(user_msgs) == 0
+        assert len(user_msgs) == 2
+        assert user_msgs[0]["content"] == "primeira pergunta"
+        assert user_msgs[1]["content"] == "segunda pergunta"
+
+    def test_voice_prefix_without_colon_kept_as_is(self):
+        """Messages starting with [🎤 but without ']: ' are kept intact."""
+        history = [
+            {"role": "user", "content": "[🎤 algo estranho"},
+        ]
+        api_messages = core.history.build_api_history(history)
+        user_msgs = [m for m in api_messages if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        assert user_msgs[0]["content"] == "[🎤 algo estranho"
 
 
-# ─── BUG 2: MIN_SPEECH_CHUNKS counts silence chunks ─────────────────────────
+# ─── FIX 2: MIN_SPEECH_CHUNKS counts only speech chunks ─────────────────────
 
-class TestBugMinSpeechChunksCountsSilence:
-    """BrowserContinuousListener.MIN_SPEECH_CHUNKS checks len(audio_buffer)
-    which includes silence chunks too."""
+class TestFixMinSpeechChunksCountsSpeech:
+    """BrowserContinuousListener.speech_chunk_count counts only loud chunks."""
 
-    def test_one_speech_plus_silence_passes_min_check(self):
+    def test_one_speech_plus_silence_does_not_pass_min_check(self):
         mod = _import_app()
         listener = mod.BrowserContinuousListener()
         listener.active = True
@@ -89,12 +97,15 @@ class TestBugMinSpeechChunksCountsSilence:
         loud = np.ones(1000, dtype=np.float32) * 0.5
         listener.feed_chunk(48000, loud)
         assert listener.speech_detected is True
+        assert listener.speech_chunk_count == 1
 
         silent = np.zeros(1000, dtype=np.float32)
         listener.feed_chunk(48000, silent)
         listener.feed_chunk(48000, silent)
 
-        assert len(listener.audio_buffer) >= listener.MIN_SPEECH_CHUNKS
+        # Only 1 speech chunk, MIN_SPEECH_CHUNKS is 3 — not enough
+        assert listener.speech_chunk_count == 1
+        assert listener.speech_chunk_count < listener.MIN_SPEECH_CHUNKS
 
     def test_pure_silence_does_not_trigger(self):
         mod = _import_app()
@@ -107,10 +118,23 @@ class TestBugMinSpeechChunksCountsSilence:
             assert result is None
 
         assert not listener.speech_detected
+        assert listener.speech_chunk_count == 0
         assert len(listener.audio_buffer) == 0
 
+    def test_enough_speech_chunks_allows_transcription(self):
+        mod = _import_app()
+        listener = mod.BrowserContinuousListener()
+        listener.active = True
 
-# ─── BUG 3: MAX_HISTORY — now unified in core.history ───────────────────────
+        loud = np.ones(1000, dtype=np.float32) * 0.5
+        for _ in range(3):
+            listener.feed_chunk(48000, loud)
+
+        assert listener.speech_chunk_count == 3
+        assert listener.speech_chunk_count >= listener.MIN_SPEECH_CHUNKS
+
+
+# ─── MAX_HISTORY — unified in core.history ───────────────────────────────
 
 class TestMaxHistoryUnified:
     """After unification, MAX_HISTORY is defined once in core.history."""
@@ -132,7 +156,7 @@ class TestMaxHistoryUnified:
         assert "MAX_HISTORY = 20" in source
 
 
-# ─── BUG 4: load_token now consistently raises RuntimeError ──────────────────
+# ─── Token error handling — unified ──────────────────────────────────────
 
 class TestTokenErrorHandlingUnified:
     """After unification, load_token always raises RuntimeError."""
@@ -146,7 +170,7 @@ class TestTokenErrorHandlingUnified:
                     core.config.load_token()
 
 
-# ─── BUG 5: ask_openclaw error handling — now unified ────────────────────────
+# ─── ask_openclaw error handling — unified ────────────────────────────────
 
 class TestAskOpenClawErrorHandlingUnified:
     """After unification, ask_openclaw always returns error strings."""
@@ -166,7 +190,7 @@ class TestAskOpenClawErrorHandlingUnified:
             assert "Timeout" in result
 
 
-# ─── BUG 6: ask_openclaw_stream doesn't catch HTTP errors before iterating ──
+# ─── ask_openclaw_stream doesn't catch HTTP errors before iterating ──────
 
 class TestBugStreamingNoPreIterationErrorHandling:
     def test_http_error_propagates_from_stream(self):
@@ -185,23 +209,26 @@ class TestBugStreamingNoPreIterationErrorHandling:
                 list(core.llm.ask_openclaw_stream("test", "tok", []))
 
 
-# ─── QUIRK: _find_sentence_end doesn't match period at end of string ────────
+# ─── FIX 4: _find_sentence_end detects punctuation at end of string ──────
 
-class TestQuirkSentenceEndDetection:
-    def test_period_at_end_not_detected(self):
-        assert core.llm._find_sentence_end("Frase completa.") == 0
+class TestFixSentenceEndDetection:
+    def test_period_at_end_detected(self):
+        assert core.llm._find_sentence_end("Frase completa.") > 0
 
-    def test_exclamation_at_end_not_detected(self):
-        assert core.llm._find_sentence_end("Incrível!") == 0
+    def test_exclamation_at_end_detected(self):
+        assert core.llm._find_sentence_end("Incrível!") > 0
 
-    def test_question_at_end_not_detected(self):
-        assert core.llm._find_sentence_end("Tudo bem?") == 0
+    def test_question_at_end_detected(self):
+        assert core.llm._find_sentence_end("Tudo bem?") > 0
 
-    def test_only_detected_with_trailing_text(self):
+    def test_still_detected_with_trailing_text(self):
         assert core.llm._find_sentence_end("Frase. Mais texto") > 0
 
+    def test_no_punctuation_returns_zero(self):
+        assert core.llm._find_sentence_end("Sem pontuação") == 0
 
-# ─── QUIRK: generate_tts skips error messages ───────────────────────────────
+
+# ─── QUIRK (kept): generate_tts skips error messages only at start ───────
 
 class TestQuirkTTSSkipsErrors:
     def test_error_at_start_skipped(self):
@@ -209,9 +236,9 @@ class TestQuirkTTSSkipsErrors:
         assert result is None
 
     def test_error_in_middle_not_skipped(self):
+        """Intentional: only filters ❌ at start. In practice errors always start with ❌."""
         with patch("core.tts.generate_tts_edge") as mock_edge:
             mock_edge.return_value = "/tmp/audio.mp3"
-            # Force edge engine
             original = core.tts._tts_engine
             core.tts._tts_engine = "edge"
             result = core.tts.generate_tts("Texto com ❌ no meio")
@@ -219,7 +246,7 @@ class TestQuirkTTSSkipsErrors:
             assert result is not None or mock_edge.called
 
 
-# ─── QUIRK: ask_openclaw signatures now unified ─────────────────────────────
+# ─── Signatures unified ─────────────────────────────────────────────────
 
 class TestSignaturesUnified:
     """After unification, ask_openclaw has one signature: (text, token, history_messages)."""

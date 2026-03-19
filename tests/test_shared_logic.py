@@ -112,8 +112,8 @@ class TestFindSentenceEnd:
     def test_no_sentence_end_returns_zero(self):
         assert core.llm._find_sentence_end("palavra sem ponto") == 0
 
-    def test_period_at_end_without_space_returns_zero(self):
-        assert core.llm._find_sentence_end("fim.") == 0
+    def test_period_at_end_detected(self):
+        assert core.llm._find_sentence_end("fim.") > 0
 
     def test_period_in_number_does_not_match(self):
         assert core.llm._find_sentence_end("valor é 3.14") == 0
@@ -122,14 +122,15 @@ class TestFindSentenceEnd:
 # ─── Chat History Builder ────────────────────────────────────────────────────
 
 class TestBuildApiHistory:
-    def test_filters_voice_prefix(self):
+    def test_strips_voice_prefix(self):
         history = [
             {"role": "user", "content": "[🎤 Voz]: olá"},
             {"role": "assistant", "content": "oi"},
         ]
         result = core.history.build_api_history(history)
-        assert len(result) == 1
-        assert result[0]["role"] == "assistant"
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "olá"
 
     def test_keeps_normal_messages(self):
         history = [

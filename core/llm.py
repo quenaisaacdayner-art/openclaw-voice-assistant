@@ -62,6 +62,6 @@ def ask_openclaw_stream(text, token, history_messages):
 
 
 def _find_sentence_end(text):
-    """Posição após primeira pontuação de fim de frase seguida de espaço."""
-    m = re.search(r'[.!?…]\s', text)
+    """Posição após primeira pontuação de fim de frase seguida de espaço ou fim da string."""
+    m = re.search(r'[.!?…](\s|$)', text)
     return m.end() if m else 0

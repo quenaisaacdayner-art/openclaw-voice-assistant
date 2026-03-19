@@ -72,7 +72,7 @@ def record_audio(mic_device):
             callback=callback,
         )
     except sd.PortAudioError as e:
-        print(f"❌ Erro no microfone: {e}")
+        print(f"❌ Erro no microfone: {str(e)}")
         return None
 
     print("  🔴 Gravando... (ENTER para parar)")

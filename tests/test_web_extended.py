@@ -365,8 +365,8 @@ class TestFindSentenceEndWeb:
     def test_no_match_returns_zero(self):
         assert core.llm._find_sentence_end("sem ponto") == 0
 
-    def test_period_at_end_no_space(self):
-        assert core.llm._find_sentence_end("fim.") == 0
+    def test_period_at_end_detected(self):
+        assert core.llm._find_sentence_end("fim.") > 0
 
     def test_multiple_sentences_returns_first(self):
         text = "Primeira. Segunda. Terceira."
@@ -382,7 +382,7 @@ class TestBuildApiHistoryWeb:
         assert hasattr(core.history, "MAX_HISTORY")
         assert core.history.MAX_HISTORY == 10
 
-    def test_filters_voice_messages(self):
+    def test_strips_voice_prefix_keeps_content(self):
         history = [
             {"role": "user", "content": "[🎤 Voz]: olá"},
             {"role": "assistant", "content": "oi"},
@@ -391,5 +391,6 @@ class TestBuildApiHistoryWeb:
         ]
         result = core.history.build_api_history(history)
         user_msgs = [m for m in result if m["role"] == "user"]
-        assert len(user_msgs) == 1
-        assert user_msgs[0]["content"] == "texto normal"
+        assert len(user_msgs) == 2
+        assert user_msgs[0]["content"] == "olá"
+        assert user_msgs[1]["content"] == "texto normal"

@@ -96,6 +96,7 @@ def generate_tts(text):
     """Gera áudio TTS. Usa Piper (local) ou Edge (online) conforme config."""
     global _previous_tts_file
 
+    # Intencional: só filtra ❌ no início. Na prática, erros sempre começam com ❌.
     if not text or text.startswith("❌"):
         return None
 

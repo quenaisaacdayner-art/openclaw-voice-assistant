@@ -212,6 +212,7 @@ class BrowserContinuousListener:
         self.sample_rate = None
         self.silence_count = 0
         self.speech_detected = False
+        self.speech_chunk_count = 0
         self.processing = False
         self.text_queue = queue.Queue()
         self.SILENCE_THRESHOLD = 0.01
@@ -222,6 +223,7 @@ class BrowserContinuousListener:
         self.audio_buffer = []
         self.silence_count = 0
         self.speech_detected = False
+        self.speech_chunk_count = 0
         self.sample_rate = None
 
     def feed_chunk(self, sr, audio_data):
@@ -240,13 +242,14 @@ class BrowserContinuousListener:
         if rms > self.SILENCE_THRESHOLD:
             self.speech_detected = True
             self.silence_count = 0
+            self.speech_chunk_count += 1
             self.audio_buffer.append(audio_data)
         else:
             if self.speech_detected:
                 self.audio_buffer.append(audio_data)
                 self.silence_count += 1
 
-                if self.silence_count >= self.SILENCE_CHUNKS_NEEDED and len(self.audio_buffer) >= self.MIN_SPEECH_CHUNKS:
+                if self.silence_count >= self.SILENCE_CHUNKS_NEEDED and self.speech_chunk_count >= self.MIN_SPEECH_CHUNKS:
                     return self._transcribe_buffer()
 
         return None
