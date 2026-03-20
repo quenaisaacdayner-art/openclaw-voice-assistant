@@ -30,6 +30,31 @@
 - **Workaround manual:** `kill $(lsof -ti:7860)` antes de rodar o script
 - **Status:** 🟡 Documentado, fix pendente
 
+## Erro #3: Gateway OpenClaw — porta errada + token (Cenário 2)
+
+- **Data:** 2026-03-20
+- **Cenário:** 2 (tudo na VPS)
+- **Sintoma:** Whisper transcreve o áudio corretamente, mas o LLM não responde — conexão recusada ao gateway
+- **Causa real (2 problemas):**
+  1. **Porta hardcoded errada:** Scripts tinham `18789` fixo, mas a VPS usa porta `19789` (configurada em `openclaw.json`)
+  2. **Token:** O código Python (`core/config.py` → `load_token()`) JÁ lê o token de `~/.openclaw/openclaw.json` automaticamente — isso NÃO era o problema
+- **Impacto:** Qualquer pessoa com porta diferente de 18789 vai ter o mesmo erro
+- **Fix aplicado:** Todos os 6 scripts (`run_local.sh/.ps1`, `run_vps.sh/.ps1`, `run_local_remote_gateway.sh/.ps1`) agora auto-detectam a porta de `~/.openclaw/openclaw.json` — se não encontrar, usa 18789 como fallback
+- **Status:** ✅ Corrigido
+
+---
+
+## Erro #4: Porta 7860 ocupada no laptop impede tunnel SSH (Cenário 2)
+
+- **Data:** 2026-03-20
+- **Cenário:** 2 (tudo na VPS, acesso via tunnel)
+- **Sintoma:** `ssh -N -L 7860:...` falha com `bind: Address already in use`
+- **Causa:** Teste do Cenário 1 deixou processo local (Gradio/server) rodando na porta 7860
+- **Impacto:** Tunnel não sobe, usuário não consegue acessar a interface da VPS
+- **Fix manual:** `netstat -ano | findstr :7860` → `taskkill /PID <PID> /F` → tentar tunnel de novo
+- **Fix ideal (futuro):** Adicionar check de porta ocupada nos scripts + documentar no README que precisa liberar a porta antes do tunnel
+- **Status:** 🟡 Documentado, workaround manual
+
 ---
 
 ## Template para novos erros
