@@ -7,9 +7,22 @@ import json
 # Diretório raiz do projeto (um nível acima de core/)
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-GATEWAY_URL = os.environ.get(
-    "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789/v1/chat/completions"
-)
+def _detect_gateway_url():
+    """Auto-detecta URL do gateway: env var > openclaw.json > fallback 18789."""
+    env_url = os.environ.get("OPENCLAW_GATEWAY_URL")
+    if env_url:
+        return env_url
+    config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        port = cfg["gateway"]["port"]
+        return f"http://127.0.0.1:{port}/v1/chat/completions"
+    except (FileNotFoundError, KeyError, json.JSONDecodeError, TypeError):
+        return "http://127.0.0.1:18789/v1/chat/completions"
+
+
+GATEWAY_URL = _detect_gateway_url()
 MODEL = os.environ.get("OPENCLAW_MODEL", "anthropic/claude-sonnet-4-6")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")

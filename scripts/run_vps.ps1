@@ -1,5 +1,12 @@
 # Cenário 2: Tudo na VPS
-$env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:18789/v1/chat/completions"
+# Auto-detecta porta do gateway OpenClaw
+if (-not $env:OPENCLAW_GATEWAY_URL) {
+    try {
+        $clawConfig = Get-Content "$HOME\.openclaw\openclaw.json" -Raw | ConvertFrom-Json
+        $port = $clawConfig.gateway.port
+    } catch { $port = 18789 }
+    $env:OPENCLAW_GATEWAY_URL = "http://127.0.0.1:${port}/v1/chat/completions"
+}
 if (-not $env:OPENCLAW_MODEL) { $env:OPENCLAW_MODEL = "anthropic/claude-sonnet-4-6" }
 if (-not $env:WHISPER_MODEL) { $env:WHISPER_MODEL = "tiny" }
 if (-not $env:TTS_ENGINE) { $env:TTS_ENGINE = "edge" }
@@ -9,6 +16,14 @@ Write-Host "🚀 Cenário: VPS (tudo remoto)"
 Write-Host "   Gateway: $env:OPENCLAW_GATEWAY_URL"
 Write-Host "   Modelo: $env:OPENCLAW_MODEL"
 Write-Host "📡 Acesse via: ssh -N -L 7860:127.0.0.1:7860 root@<VPS_IP>"
+
+# Matar processo anterior na porta 7860 (se existir)
+$oldProc = Get-NetTCPConnection -LocalPort 7860 -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($oldProc) {
+    Write-Host "⚠️  Matando processo anterior na porta 7860 (PID: $($oldProc.OwningProcess))"
+    Stop-Process -Id $oldProc.OwningProcess -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
 
 if (-not $env:APP_MODE) { $env:APP_MODE = "websocket" }
 

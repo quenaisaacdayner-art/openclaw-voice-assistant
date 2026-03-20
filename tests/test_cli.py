@@ -8,6 +8,7 @@ import json
 import wave
 import tempfile
 import threading
+import importlib
 from unittest.mock import patch, MagicMock, PropertyMock
 import numpy as np
 import pytest
@@ -21,7 +22,6 @@ import core.config as config
 
 class TestDefaults:
     def test_default_gateway_url(self):
-        assert "18789" in config.GATEWAY_URL
         assert config.GATEWAY_URL.endswith("/v1/chat/completions")
 
     def test_default_model(self):
@@ -39,8 +39,12 @@ class TestDefaults:
     def test_channels_mono(self):
         assert cli.CHANNELS == 1
 
-    def test_default_tts_engine(self):
+    def test_default_tts_engine(self, monkeypatch):
+        monkeypatch.delenv("TTS_ENGINE", raising=False)
+        importlib.reload(config)
         assert config.TTS_ENGINE == "piper"
+        # Restaurar valor original
+        importlib.reload(config)
 
     def test_max_history_is_defined_in_main(self):
         """MAX_HISTORY is a local variable inside main(), not a module-level constant."""
