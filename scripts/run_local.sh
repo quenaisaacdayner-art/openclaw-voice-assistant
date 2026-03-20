@@ -2,6 +2,8 @@
 # Cenário 1: Tudo local (laptop com OpenClaw)
 # Requisitos: OpenClaw Gateway rodando local em :18789
 
+source "$(dirname "$0")/_activate_venv.sh"
+
 export OPENCLAW_GATEWAY_URL="http://127.0.0.1:18789/v1/chat/completions"
 export OPENCLAW_MODEL="${OPENCLAW_MODEL:-anthropic/claude-sonnet-4-6}"
 export WHISPER_MODEL="${WHISPER_MODEL:-tiny}"

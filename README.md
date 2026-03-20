@@ -31,16 +31,19 @@ O **OpenClaw** é o cérebro — seu agente com memória, skills e contexto. Est
 ```bash
 git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
 cd openclaw-voice-assistant
-pip install -r requirements.txt
+bash setup.sh
 ```
+
+`setup.sh` faz tudo: detecta o OS, instala Python se necessário (Ubuntu/Debian/Fedora/macOS), cria virtualenv, instala dependências. Funciona em VPS limpa.
 
 Para TTS local (Kokoro/Piper) e mic direto no server:
 
 ```bash
+source venv/bin/activate
 pip install -r requirements-local.txt
 ```
 
-**Requisitos:** Python 3.10+, OpenClaw Gateway rodando com `chatCompletions` habilitado.
+**Requisitos:** OpenClaw Gateway rodando com `chatCompletions` habilitado. Python 3.10+ (instalado automaticamente pelo `setup.sh` em distros suportadas).
 
 ## 3 Cenários de uso
 
