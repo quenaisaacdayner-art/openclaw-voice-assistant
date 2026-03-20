@@ -4,17 +4,19 @@ Protocolo: binary (audio PCM/WAV) + JSON (controle)
 """
 import os
 import json
+import time
 import asyncio
 import traceback
 
 import numpy as np
+import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from core.config import load_token, MODEL, WHISPER_MODEL_SIZE
-from core.stt import transcribe_audio
-from core.tts import init_tts, generate_tts
+from core.config import load_token, GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE
+from core.stt import transcribe_audio, init_stt
+from core.tts import init_tts, warmup_tts, generate_tts
 from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end
 from core.history import build_api_history, MAX_HISTORY
 
@@ -23,6 +25,26 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 TOKEN = load_token()
 init_tts()
+
+# — Warmup —
+_warmup_t0 = time.time()
+
+init_stt()
+warmup_tts()
+
+# Gateway ping
+_gw_t0 = time.time()
+try:
+    # Extrair URL base (sem /chat/completions)
+    _gw_base = GATEWAY_URL.rsplit("/chat/completions", 1)[0]
+    _gw_resp = requests.get(_gw_base, timeout=10, headers={"Authorization": f"Bearer {TOKEN}"})
+    _gw_elapsed = time.time() - _gw_t0
+    print(f"[WARMUP] Gateway OK em {_gw_elapsed:.1f}s")
+except Exception:
+    _gw_elapsed = time.time() - _gw_t0
+    print(f"[WARMUP] ⚠️ Gateway não respondeu — vai conectar na 1ª mensagem")
+
+print(f"[WARMUP] Tudo pronto em {time.time() - _warmup_t0:.1f}s")
 
 
 async def _tts_to_bytes(text, loop):
@@ -70,6 +92,9 @@ async def websocket_endpoint(ws: WebSocket):
         cancel_event.clear()
 
         try:
+            t0 = time.time()
+            print(f"\n[REQ] Nova mensagem recebida")
+
             await send_status("thinking")
 
             # Converter buffer PCM -> numpy pra Whisper
@@ -81,6 +106,7 @@ async def websocket_endpoint(ws: WebSocket):
             transcript = await loop.run_in_executor(
                 None, transcribe_audio, (16000, pcm_data)
             )
+            t_stt = time.time()
 
             if not transcript or cancel_event.is_set():
                 await send_json_msg({"type": "transcript", "text": ""})
@@ -93,6 +119,8 @@ async def websocket_endpoint(ws: WebSocket):
                     "message": "Nao captei o audio. Tente novamente."
                 })
                 return
+
+            print(f"[STT] Transcrição: \"{transcript[:50]}{'...' if len(transcript) > 50 else ''}\" ({t_stt - t0:.1f}s)")
 
             await send_json_msg({"type": "transcript", "text": transcript})
 
@@ -107,6 +135,8 @@ async def websocket_endpoint(ws: WebSocket):
             await send_status("speaking")
 
             text_queue = asyncio.Queue()
+            t_llm_start = time.time()
+            t_ttft = None  # tempo até 1º token
 
             def _stream_worker():
                 """Roda em thread — coloca textos parciais na queue."""
@@ -129,6 +159,8 @@ async def websocket_endpoint(ws: WebSocket):
             full_response = ""
             last_tts_end = 0
             stream_error = False
+            tts_count = 0
+            t_tts_first = None
 
             while True:
                 if cancel_event.is_set():
@@ -145,6 +177,11 @@ async def websocket_endpoint(ws: WebSocket):
                     stream_error = True
                     break
 
+                # TTFT: tempo do 1º token
+                if t_ttft is None:
+                    t_ttft = time.time()
+                    print(f"[LLM] TTFT: {t_ttft - t_llm_start:.1f}s")
+
                 full_response = partial
                 await send_json_msg({"type": "text", "text": partial, "done": False})
 
@@ -154,10 +191,19 @@ async def websocket_endpoint(ws: WebSocket):
                 if end > 0:
                     sentence = remaining[:end].strip()
                     if sentence and not cancel_event.is_set():
+                        t_tts_s = time.time()
                         audio_bytes = await _tts_to_bytes(sentence, loop)
                         if audio_bytes and not cancel_event.is_set():
                             await ws.send_bytes(audio_bytes)
+                            tts_count += 1
+                            if t_tts_first is None:
+                                t_tts_first = time.time()
+                                print(f"[TTS] 1ª frase: \"{sentence[:40]}{'...' if len(sentence) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
                         last_tts_end += end
+
+            t_llm_end = time.time()
+            if full_response:
+                print(f"[LLM] Resposta completa: {len(full_response)} chars em {t_llm_end - t_llm_start:.1f}s")
 
             # Fallback sincrono se streaming falhou
             if stream_error and not full_response and not cancel_event.is_set():
@@ -176,9 +222,14 @@ async def websocket_endpoint(ws: WebSocket):
             if full_response and not cancel_event.is_set():
                 remaining_text = full_response[last_tts_end:].strip()
                 if remaining_text:
+                    t_tts_s = time.time()
                     audio_bytes = await _tts_to_bytes(remaining_text, loop)
                     if audio_bytes and not cancel_event.is_set():
                         await ws.send_bytes(audio_bytes)
+                        tts_count += 1
+                        if t_tts_first is None:
+                            t_tts_first = time.time()
+                            print(f"[TTS] 1ª frase: \"{remaining_text[:40]}{'...' if len(remaining_text) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
 
                 await send_json_msg({"type": "text", "text": full_response, "done": True})
                 chat_history.append({"role": "assistant", "content": full_response})
@@ -186,6 +237,11 @@ async def websocket_endpoint(ws: WebSocket):
                 # Interrompido — salvar texto parcial
                 await send_json_msg({"type": "text", "text": full_response, "done": True})
                 chat_history.append({"role": "assistant", "content": full_response + " [interrompido]"})
+
+            t_total = time.time() - t0
+            if tts_count > 0:
+                print(f"[TTS] Total: {tts_count} frases")
+            print(f"[TOTAL] Fala→Resposta: {t_total:.1f}s")
 
         except Exception as e:
             traceback.print_exc()

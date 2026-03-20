@@ -154,6 +154,30 @@ def init_tts():
         print(f"✅ Edge TTS ({TTS_VOICE})")
 
 
+def warmup_tts():
+    """Pre-warm: gera TTS dummy pra abrir conexões."""
+    import time
+    t0 = time.time()
+    if _tts_engine == "edge":
+        # Edge TTS: gerar dummy pra abrir WebSocket com Microsoft
+        try:
+            generate_tts_edge("ok")
+        except Exception:
+            pass
+    elif _tts_engine == "kokoro" and kokoro_instance is not None:
+        try:
+            generate_tts_kokoro("ok")
+        except Exception:
+            pass
+    elif _tts_engine == "piper" and piper_voice is not None:
+        try:
+            generate_tts_piper("ok")
+        except Exception:
+            pass
+    elapsed = time.time() - t0
+    print(f"[WARMUP] TTS ({_tts_engine}) pronto em {elapsed:.1f}s")
+
+
 def generate_tts_kokoro(text):
     """Gera TTS com Kokoro (local). Retorna path do WAV ou None."""
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)

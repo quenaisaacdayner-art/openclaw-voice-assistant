@@ -28,6 +28,15 @@ def _get_whisper():
     return _whisper_model
 
 
+def init_stt():
+    """Pre-warm: carrega modelo Whisper no startup."""
+    import time
+    t0 = time.time()
+    _get_whisper()
+    elapsed = time.time() - t0
+    print(f"[WARMUP] Whisper ({WHISPER_MODEL_SIZE}) carregado em {elapsed:.1f}s")
+
+
 def transcribe_audio(audio_input):
     """Transcreve áudio de componente gr.Audio. Recebe tuple (sample_rate, numpy_array)."""
     if audio_input is None:
