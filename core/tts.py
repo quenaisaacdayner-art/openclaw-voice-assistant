@@ -175,6 +175,22 @@ def init_tts():
         print(f"✅ Edge TTS ({TTS_VOICE})")
 
 
+def get_engine():
+    """Retorna o engine TTS ativo (após fallback). Usar em vez de importar _tts_engine."""
+    return _tts_engine
+
+
+def get_tts_info():
+    """Retorna string descritiva do engine TTS ativo, pra banner de startup."""
+    if _tts_engine == "kokoro" and kokoro_instance is not None:
+        return f"Kokoro (voz: {_kokoro_voice}, local)"
+    elif _tts_engine == "piper" and piper_voice is not None:
+        return "Piper (faber-medium, local)"
+    elif _tts_engine == "edge":
+        return f"Edge TTS ({_edge_voice}, online)"
+    return f"{_tts_engine} (desconhecido)"
+
+
 def get_available_voices():
     return AVAILABLE_VOICES.get(_tts_engine, [])
 

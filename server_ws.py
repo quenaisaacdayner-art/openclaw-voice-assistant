@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from core.config import load_token, GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE
 from core.stt import transcribe_audio, init_stt, get_current_model
 from core.tts import (init_tts, warmup_tts, generate_tts,
-                      _tts_engine, kokoro_instance, piper_voice, KOKORO_VOICE,
+                      get_engine, get_tts_info,
                       get_available_voices, get_current_voice, get_speed)
 from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end
 from core.history import build_api_history, MAX_HISTORY
@@ -35,16 +35,7 @@ init_stt()
 warmup_tts()
 
 # TTS engine banner
-if _tts_engine == "kokoro" and kokoro_instance is not None:
-    _tts_info = f"Kokoro (voz: {KOKORO_VOICE}, local)"
-elif _tts_engine == "piper" and piper_voice is not None:
-    _tts_info = "Piper (faber-medium, local)"
-elif _tts_engine == "edge":
-    from core.tts import _edge_voice
-    _tts_info = f"Edge TTS ({_edge_voice}, online)"
-else:
-    _tts_info = f"{_tts_engine} (desconhecido)"
-print(f"🔊 TTS Engine: {_tts_info}")
+print(f"🔊 TTS Engine: {get_tts_info()}")
 
 # Gateway ping
 _gw_t0 = time.time()
@@ -88,7 +79,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Enviar info do servidor ao conectar
     server_info = {
         "type": "server_info",
-        "tts_engine": _tts_engine,
+        "tts_engine": get_engine(),
         "tts_voice": get_current_voice(),
         "tts_voices": get_available_voices(),
         "tts_speed": get_speed(),
