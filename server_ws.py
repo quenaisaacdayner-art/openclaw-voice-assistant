@@ -21,6 +21,8 @@ from core.tts import (init_tts, warmup_tts, generate_tts,
 from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end, _session as llm_session
 from core.history import build_api_history, MAX_HISTORY
 
+LLM_TIMEOUT = 120  # segundos sem resposta do LLM antes de cancelar
+
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -89,6 +91,8 @@ async def websocket_endpoint(ws: WebSocket):
     audio_buffer = bytearray()  # PCM 16-bit, 16kHz, mono
     processing = False
     cancel_event = asyncio.Event()
+    processing_lock = asyncio.Lock()
+    pending_audio = bytearray()  # áudio que chegou durante processamento
 
     async def send_json_msg(data):
         try:
@@ -134,13 +138,26 @@ async def websocket_endpoint(ws: WebSocket):
         tts_count = 0
         t_tts_first = None
 
+        t_last_data = time.time()
+
         while True:
             if cancel_event.is_set():
                 break
             try:
-                partial = await asyncio.wait_for(text_queue.get(), timeout=0.1)
+                partial = await asyncio.wait_for(text_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
+                # Checar timeout global
+                if time.time() - t_last_data > LLM_TIMEOUT:
+                    print(f"[LLM] ⚠️ Timeout: {LLM_TIMEOUT}s sem resposta")
+                    await send_json_msg({
+                        "type": "error",
+                        "message": f"Sem resposta do servidor há {LLM_TIMEOUT}s. Tente novamente."
+                    })
+                    stream_error = True
+                    break
                 continue
+
+            t_last_data = time.time()  # Reset timer a cada chunk recebido
 
             if partial is None:
                 break
@@ -224,115 +241,124 @@ async def websocket_endpoint(ws: WebSocket):
 
     async def process_speech():
         """Processa audio acumulado: STT -> LLM -> TTS"""
-        nonlocal processing, chat_history
-        processing = True
-        cancel_event.clear()
+        nonlocal processing, chat_history, pending_audio
 
-        try:
-            t0 = time.time()
-            print(f"\n[REQ] Nova mensagem recebida")
+        async with processing_lock:
+            processing = True
+            cancel_event.clear()
 
-            await send_status("thinking")
+            try:
+                t0 = time.time()
+                print(f"\n[REQ] Nova mensagem recebida")
 
-            # Converter buffer PCM -> numpy pra Whisper
-            pcm_data = np.frombuffer(bytes(audio_buffer), dtype=np.int16)
-            audio_buffer.clear()
+                await send_status("thinking")
 
-            # 1. STT
-            loop = asyncio.get_event_loop()
-            transcript = await loop.run_in_executor(
-                None, transcribe_audio, (16000, pcm_data)
-            )
-            t_stt = time.time()
+                # Converter buffer PCM -> numpy pra Whisper
+                pcm_data = np.frombuffer(bytes(audio_buffer), dtype=np.int16)
+                audio_buffer.clear()
 
-            if not transcript or cancel_event.is_set():
-                await send_json_msg({"type": "transcript", "text": ""})
-                return
+                # 1. STT
+                loop = asyncio.get_event_loop()
+                transcript = await loop.run_in_executor(
+                    None, transcribe_audio, (16000, pcm_data)
+                )
+                t_stt = time.time()
 
-            if transcript.startswith("[Erro"):
-                await send_json_msg({"type": "transcript", "text": ""})
+                if not transcript or cancel_event.is_set():
+                    await send_json_msg({"type": "transcript", "text": ""})
+                    return
+
+                if transcript.startswith("[Erro"):
+                    await send_json_msg({"type": "transcript", "text": ""})
+                    await send_json_msg({
+                        "type": "error",
+                        "message": "Nao captei o audio. Tente novamente."
+                    })
+                    return
+
+                print(f"[STT] Transcrição: \"{transcript[:50]}{'...' if len(transcript) > 50 else ''}\" ({t_stt - t0:.1f}s)")
+
+                await send_json_msg({"type": "transcript", "text": transcript})
+
+                # 2. Adicionar ao historico
+                chat_history.append({"role": "user", "content": transcript})
+                if len(chat_history) > MAX_HISTORY * 2:
+                    chat_history = chat_history[-(MAX_HISTORY * 2):]
+
+                # 3. LLM streaming + TTS por frase
+                metrics = await _llm_and_tts(transcript, t_start=t0)
+
+                t_total = time.time() - t0
+                print(f"[TOTAL] Fala→Resposta: {t_total:.1f}s")
+
+                if metrics:
+                    perf_msg = {"type": "perf"}
+                    if metrics.get("ttft"):
+                        perf_msg["ttft"] = round(metrics["ttft"], 1)
+                    if metrics.get("tts_first"):
+                        perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
+                    await send_json_msg(perf_msg)
+
+            except Exception as e:
+                traceback.print_exc()
                 await send_json_msg({
                     "type": "error",
-                    "message": "Nao captei o audio. Tente novamente."
+                    "message": f"Erro interno: {e}"
                 })
-                return
 
-            print(f"[STT] Transcrição: \"{transcript[:50]}{'...' if len(transcript) > 50 else ''}\" ({t_stt - t0:.1f}s)")
+            finally:
+                processing = False
+                if not cancel_event.is_set():
+                    await send_status("listening")
 
-            await send_json_msg({"type": "transcript", "text": transcript})
-
-            # 2. Adicionar ao historico
-            chat_history.append({"role": "user", "content": transcript})
-            if len(chat_history) > MAX_HISTORY * 2:
-                chat_history = chat_history[-(MAX_HISTORY * 2):]
-
-            # 3. LLM streaming + TTS por frase
-            metrics = await _llm_and_tts(transcript, t_start=t0)
-
-            t_total = time.time() - t0
-            print(f"[TOTAL] Fala→Resposta: {t_total:.1f}s")
-
-            if metrics:
-                perf_msg = {"type": "perf"}
-                if metrics.get("ttft"):
-                    perf_msg["ttft"] = round(metrics["ttft"], 1)
-                if metrics.get("tts_first"):
-                    perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
-                await send_json_msg(perf_msg)
-
-        except Exception as e:
-            traceback.print_exc()
-            await send_json_msg({
-                "type": "error",
-                "message": f"Erro interno: {e}"
-            })
-
-        finally:
-            processing = False
-            if not cancel_event.is_set():
-                await send_status("listening")
+                # Processar áudio pendente (se alguém falou durante o processamento)
+                if len(pending_audio) > 1600:
+                    audio_buffer.extend(pending_audio)
+                    pending_audio.clear()
 
     async def process_text(user_text):
         """Processa texto digitado: LLM -> TTS (sem STT)."""
         nonlocal processing, chat_history
-        processing = True
-        cancel_event.clear()
 
-        try:
-            t0 = time.time()
-            print(f"\n[REQ] Texto digitado: \"{user_text[:50]}{'...' if len(user_text) > 50 else ''}\"")
+        async with processing_lock:
+            processing = True
+            cancel_event.clear()
 
-            await send_json_msg({"type": "transcript", "text": user_text})
-            await send_status("thinking")
+            try:
+                t0 = time.time()
+                print(f"\n[REQ] Texto digitado: \"{user_text[:50]}{'...' if len(user_text) > 50 else ''}\"")
 
-            chat_history.append({"role": "user", "content": user_text})
-            if len(chat_history) > MAX_HISTORY * 2:
-                chat_history = chat_history[-(MAX_HISTORY * 2):]
+                await send_json_msg({"type": "transcript", "text": user_text})
+                await send_status("thinking")
 
-            metrics = await _llm_and_tts(user_text, t_start=t0)
+                chat_history.append({"role": "user", "content": user_text})
+                if len(chat_history) > MAX_HISTORY * 2:
+                    chat_history = chat_history[-(MAX_HISTORY * 2):]
 
-            t_total = time.time() - t0
-            print(f"[TOTAL] Texto→Resposta: {t_total:.1f}s")
+                metrics = await _llm_and_tts(user_text, t_start=t0)
 
-            if metrics:
-                perf_msg = {"type": "perf"}
-                if metrics.get("ttft"):
-                    perf_msg["ttft"] = round(metrics["ttft"], 1)
-                if metrics.get("tts_first"):
-                    perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
-                await send_json_msg(perf_msg)
+                t_total = time.time() - t0
+                print(f"[TOTAL] Texto→Resposta: {t_total:.1f}s")
 
-        except Exception as e:
-            traceback.print_exc()
-            await send_json_msg({
-                "type": "error",
-                "message": f"Erro interno: {e}"
-            })
+                if metrics:
+                    perf_msg = {"type": "perf"}
+                    if metrics.get("ttft"):
+                        perf_msg["ttft"] = round(metrics["ttft"], 1)
+                    if metrics.get("tts_first"):
+                        perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
+                    await send_json_msg(perf_msg)
 
-        finally:
-            processing = False
-            if not cancel_event.is_set():
-                await send_status("listening")
+            except Exception as e:
+                traceback.print_exc()
+                await send_json_msg({
+                    "type": "error",
+                    "message": f"Erro interno: {e}"
+                })
+
+            finally:
+                processing = False
+                if not cancel_event.is_set():
+                    await send_status("listening")
 
     # --- Main receive loop ---
     process_task = None
@@ -380,9 +406,13 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
 
                 if data["type"] == "vad_event" and data["event"] == "speech_end":
-                    if processing:
-                        continue
                     if len(audio_buffer) < 1600:  # <50ms = ruido
+                        audio_buffer.clear()
+                        continue
+
+                    if processing_lock.locked():
+                        # Já processando — guardar áudio pra depois
+                        pending_audio.extend(audio_buffer)
                         audio_buffer.clear()
                         continue
 
@@ -404,6 +434,12 @@ async def websocket_endpoint(ws: WebSocket):
                     if user_text and not processing:
                         process_task = asyncio.create_task(process_text(user_text))
 
+                elif data["type"] == "clear_history":
+                    chat_history.clear()
+                    print("[SESSION] Histórico limpo pelo usuário")
+                    await send_json_msg({"type": "history_cleared"})
+                    continue
+
                 elif data["type"] == "config":
                     whisper_model = data.get("whisper_model")
                     if whisper_model and whisper_model in ("tiny", "small", "medium"):
@@ -422,9 +458,17 @@ async def websocket_endpoint(ws: WebSocket):
                         set_speed(float(speed))
 
     except WebSocketDisconnect:
+        cancel_event.set()
         if process_task and not process_task.done():
-            cancel_event.set()
             process_task.cancel()
+            try:
+                await asyncio.wait_for(process_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        # Limpar buffers
+        audio_buffer.clear()
+        pending_audio.clear()
+        print(f"[WS] Cliente desconectou. Cleanup completo.")
     except Exception:
         traceback.print_exc()
 

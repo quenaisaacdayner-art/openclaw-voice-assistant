@@ -554,6 +554,10 @@ let chatMessages = [];
 const MAX_RESTORE = 20;
 let hasConnectedBefore = false;
 
+// Session length warning
+const SESSION_WARN_MESSAGES = 30;
+let sessionWarningShown = false;
+
 // Marked.js config
 if (typeof marked !== 'undefined') {
     marked.setOptions({
@@ -609,6 +613,50 @@ function trimChatMessages() {
     if (chatMessages.length > MAX_RESTORE) {
         chatMessages = chatMessages.slice(-MAX_RESTORE);
     }
+}
+
+function checkSessionLength() {
+    if (sessionWarningShown) return;
+    if (chatMessages.length >= SESSION_WARN_MESSAGES) {
+        sessionWarningShown = true;
+
+        const warn = document.createElement('div');
+        warn.id = 'sessionWarn';
+        warn.style.cssText = `
+            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+            background: #2d2d44; color: #ffd700; padding: 12px 20px; border-radius: 10px;
+            font-size: 0.9em; z-index: 100; display: flex; align-items: center; gap: 10px;
+            border: 1px solid rgba(255,215,0,0.3); max-width: 90%;
+        `;
+        warn.innerHTML = `
+            <span>⚠️ Sessão longa — respostas podem ficar mais lentas.</span>
+            <button onclick="clearHistory()" style="
+                background: #ffd700; color: #1a1a2e; border: none; padding: 6px 12px;
+                border-radius: 6px; cursor: pointer; font-weight: bold; white-space: nowrap;
+            ">Limpar histórico</button>
+            <button onclick="this.parentElement.remove()" style="
+                background: none; border: none; color: #888; cursor: pointer; font-size: 1.2em;
+            ">✕</button>
+        `;
+        document.body.appendChild(warn);
+    }
+}
+
+function clearHistory() {
+    chatMessages = [];
+    sessionWarningShown = false;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'clear_history' }));
+    }
+
+    const messages = document.getElementById('messages');
+    if (messages) messages.innerHTML = '';
+
+    const warn = document.getElementById('sessionWarn');
+    if (warn) warn.remove();
+
+    console.log('[SESSION] Histórico limpo');
 }
 
 // ─── WebSocket ───────────────────────────────────────
@@ -710,6 +758,7 @@ function connect() {
                     if (data.text && data.text.trim()) {
                         chatMessages.push({ role: 'user', content: data.text.trim() });
                         trimChatMessages();
+                        checkSessionLength();
                     }
                     break;
                 case 'text':
@@ -717,6 +766,7 @@ function connect() {
                     if (data.done && data.text) {
                         chatMessages.push({ role: 'assistant', content: data.text });
                         trimChatMessages();
+                        checkSessionLength();
                     }
                     break;
                 case 'error': showError(data.message); break;
@@ -1027,6 +1077,7 @@ function disconnect() {
     serverSpeaking = false;
     chatMessages = [];
     hasConnectedBefore = false;
+    sessionWarningShown = false;
 
     // 5. Reset UI
     startBtn.textContent = 'Iniciar';

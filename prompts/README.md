@@ -35,9 +35,15 @@ prompts/
 │   ├── s2b_seletor_vozes.md
 │   └── s2c_velocidade_tts.md
 │
-├── s3_latencia/                      ← (a definir)
+├── s3_latencia/
+│   └── s3_completo.md                ← 🎯 USAR ESTE (4 otimizações)
+│
 ├── s4_transporte/
+│   └── s4_completo.md                ← 🎯 USAR ESTE (3 features: backoff, keepalive, session)
+│
 ├── s5_robustez/
+│   └── s5_completo.md                ← 🎯 USAR ESTE (5 fixes: markdown TTS, timeout, race, cleanup, aviso)
+│
 ├── s6_deploy/
 ├── s7_seguranca/
 └── s8_conversacao/
@@ -45,9 +51,12 @@ prompts/
 
 ## Ordem de execução
 
-1. **S1** primeiro (cria config panel, UI base)
-2. **S2** segundo (depende do config panel do S1)
-3. S3-S8: a definir, ver ROADMAP.md
+1. **S1** ✅ Interface & Interação (8 features)
+2. **S2** ✅ Pipeline de Áudio (3 features)
+3. **S3** ✅ Latência (4 otimizações)
+4. **S4** ✅ Transporte & Conexão (backoff, keepalive, session persistence)
+5. **S5** ← PRÓXIMO (robustez: markdown TTS, timeout LLM, race condition, cleanup, aviso sessão longa)
+6. S6-S8: a definir, ver ROADMAP.md
 
 ## Regras
 

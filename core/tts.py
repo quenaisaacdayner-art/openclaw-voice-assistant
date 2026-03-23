@@ -2,6 +2,7 @@
 
 import os
 import sys
+import re as _re
 import wave
 import asyncio
 import tempfile
@@ -9,6 +10,64 @@ import concurrent.futures
 
 import requests
 import edge_tts
+
+
+def _strip_markdown(text):
+    """Remove formatação markdown pra TTS não ler símbolos em voz alta."""
+    if not text:
+        return text
+
+    s = text
+
+    # Code blocks (``` ... ```) → remover conteúdo
+    s = _re.sub(r'```[\s\S]*?```', '', s)
+
+    # Inline code (`texto`) → manter texto
+    s = _re.sub(r'`([^`]+)`', r'\1', s)
+
+    # Headers (# ## ### etc) → remover os #
+    s = _re.sub(r'^#{1,6}\s+', '', s, flags=_re.MULTILINE)
+
+    # Bold+italic (***texto*** ou ___texto___) → manter texto
+    s = _re.sub(r'\*{3}(.+?)\*{3}', r'\1', s)
+    s = _re.sub(r'_{3}(.+?)_{3}', r'\1', s)
+
+    # Bold (**texto** ou __texto__) → manter texto
+    s = _re.sub(r'\*{2}(.+?)\*{2}', r'\1', s)
+    s = _re.sub(r'_{2}(.+?)_{2}', r'\1', s)
+
+    # Italic (*texto* ou _texto_) → manter texto
+    s = _re.sub(r'(?<!\w)\*([^*\n]+?)\*(?!\w)', r'\1', s)
+    s = _re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'\1', s)
+
+    # Links [texto](url) → manter texto
+    s = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)
+
+    # Images ![alt](url) → remover completamente
+    s = _re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', s)
+
+    # Blockquotes (> texto) → manter texto
+    s = _re.sub(r'^>\s+', '', s, flags=_re.MULTILINE)
+
+    # Bullets (- item ou * item no início de linha) → manter texto
+    s = _re.sub(r'^\s*[-*+]\s+', '', s, flags=_re.MULTILINE)
+
+    # Numbered lists (1. item) → manter texto
+    s = _re.sub(r'^\s*\d+\.\s+', '', s, flags=_re.MULTILINE)
+
+    # Horizontal rules (---, ***, ___) → remover
+    s = _re.sub(r'^[-*_]{3,}\s*$', '', s, flags=_re.MULTILINE)
+
+    # Strikethrough (~~texto~~) → manter texto
+    s = _re.sub(r'~~(.+?)~~', r'\1', s)
+
+    # Limpar linhas vazias múltiplas
+    s = _re.sub(r'\n{3,}', '\n\n', s)
+
+    # Limpar espaços extras
+    s = s.strip()
+
+    return s
 
 from core.config import TTS_ENGINE, TTS_VOICE, PIPER_MODEL, PROJECT_DIR
 
@@ -350,6 +409,12 @@ def generate_tts(text):
 
     # Truncar pra TTS
     tts_text = text[:1500] + "..." if len(text) > 1500 else text
+
+    # Limpar markdown — TTS não deve ler símbolos
+    tts_text = _strip_markdown(tts_text)
+
+    if not tts_text:
+        return None
 
     result = None
 
