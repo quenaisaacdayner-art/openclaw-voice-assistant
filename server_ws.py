@@ -85,6 +85,116 @@ async def websocket_endpoint(ws: WebSocket):
     async def send_status(status):
         await send_json_msg({"type": "status", "status": status})
 
+    async def _llm_and_tts(user_text):
+        """LLM streaming + TTS por frase. Bloco compartilhado por speech e text."""
+        nonlocal chat_history
+
+        api_history = build_api_history(chat_history[:-1])
+        await send_status("speaking")
+
+        loop = asyncio.get_event_loop()
+        text_queue = asyncio.Queue()
+        t_llm_start = time.time()
+        t_ttft = None
+
+        def _stream_worker():
+            try:
+                for partial in ask_openclaw_stream(user_text, TOKEN, api_history):
+                    asyncio.run_coroutine_threadsafe(
+                        text_queue.put(partial), loop
+                    )
+            except Exception as e:
+                asyncio.run_coroutine_threadsafe(
+                    text_queue.put(("__error__", str(e))), loop
+                )
+            finally:
+                asyncio.run_coroutine_threadsafe(
+                    text_queue.put(None), loop
+                )
+
+        loop.run_in_executor(None, _stream_worker)
+
+        full_response = ""
+        last_tts_end = 0
+        stream_error = False
+        tts_count = 0
+        t_tts_first = None
+
+        while True:
+            if cancel_event.is_set():
+                break
+            try:
+                partial = await asyncio.wait_for(text_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+
+            if partial is None:
+                break
+            if isinstance(partial, tuple) and partial[0] == "__error__":
+                stream_error = True
+                break
+
+            if t_ttft is None:
+                t_ttft = time.time()
+                print(f"[LLM] TTFT: {t_ttft - t_llm_start:.1f}s")
+
+            full_response = partial
+            await send_json_msg({"type": "text", "text": partial, "done": False})
+
+            remaining = partial[last_tts_end:]
+            end = _find_sentence_end(remaining)
+            if end > 0:
+                sentence = remaining[:end].strip()
+                if sentence and not cancel_event.is_set():
+                    t_tts_s = time.time()
+                    audio_bytes = await _tts_to_bytes(sentence, loop)
+                    if audio_bytes and not cancel_event.is_set():
+                        await ws.send_bytes(audio_bytes)
+                        tts_count += 1
+                        if t_tts_first is None:
+                            t_tts_first = time.time()
+                            print(f"[TTS] 1ª frase: \"{sentence[:40]}{'...' if len(sentence) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
+                    last_tts_end += end
+
+        t_llm_end = time.time()
+        if full_response:
+            print(f"[LLM] Resposta completa: {len(full_response)} chars em {t_llm_end - t_llm_start:.1f}s")
+
+        # Fallback sincrono se streaming falhou
+        if stream_error and not full_response and not cancel_event.is_set():
+            try:
+                full_response = await loop.run_in_executor(
+                    None, ask_openclaw, user_text, TOKEN, api_history
+                )
+            except Exception:
+                await send_json_msg({
+                    "type": "error",
+                    "message": "Erro ao processar resposta. Tente novamente."
+                })
+                return
+
+        # TTS do texto restante
+        if full_response and not cancel_event.is_set():
+            remaining_text = full_response[last_tts_end:].strip()
+            if remaining_text:
+                t_tts_s = time.time()
+                audio_bytes = await _tts_to_bytes(remaining_text, loop)
+                if audio_bytes and not cancel_event.is_set():
+                    await ws.send_bytes(audio_bytes)
+                    tts_count += 1
+                    if t_tts_first is None:
+                        t_tts_first = time.time()
+                        print(f"[TTS] 1ª frase: \"{remaining_text[:40]}{'...' if len(remaining_text) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
+
+            await send_json_msg({"type": "text", "text": full_response, "done": True})
+            chat_history.append({"role": "assistant", "content": full_response})
+        elif full_response:
+            await send_json_msg({"type": "text", "text": full_response, "done": True})
+            chat_history.append({"role": "assistant", "content": full_response + " [interrompido]"})
+
+        if tts_count > 0:
+            print(f"[TTS] Total: {tts_count} frases")
+
     async def process_speech():
         """Processa audio acumulado: STT -> LLM -> TTS"""
         nonlocal processing, chat_history
@@ -101,7 +211,7 @@ async def websocket_endpoint(ws: WebSocket):
             pcm_data = np.frombuffer(bytes(audio_buffer), dtype=np.int16)
             audio_buffer.clear()
 
-            # 1. STT — transcribe_audio espera (sample_rate, numpy_array)
+            # 1. STT
             loop = asyncio.get_event_loop()
             transcript = await loop.run_in_executor(
                 None, transcribe_audio, (16000, pcm_data)
@@ -130,118 +240,44 @@ async def websocket_endpoint(ws: WebSocket):
                 chat_history = chat_history[-(MAX_HISTORY * 2):]
 
             # 3. LLM streaming + TTS por frase
-            api_history = build_api_history(chat_history[:-1])
-
-            await send_status("speaking")
-
-            text_queue = asyncio.Queue()
-            t_llm_start = time.time()
-            t_ttft = None  # tempo até 1º token
-
-            def _stream_worker():
-                """Roda em thread — coloca textos parciais na queue."""
-                try:
-                    for partial in ask_openclaw_stream(transcript, TOKEN, api_history):
-                        asyncio.run_coroutine_threadsafe(
-                            text_queue.put(partial), loop
-                        )
-                except Exception as e:
-                    asyncio.run_coroutine_threadsafe(
-                        text_queue.put(("__error__", str(e))), loop
-                    )
-                finally:
-                    asyncio.run_coroutine_threadsafe(
-                        text_queue.put(None), loop  # Sentinel
-                    )
-
-            loop.run_in_executor(None, _stream_worker)
-
-            full_response = ""
-            last_tts_end = 0
-            stream_error = False
-            tts_count = 0
-            t_tts_first = None
-
-            while True:
-                if cancel_event.is_set():
-                    break
-
-                try:
-                    partial = await asyncio.wait_for(text_queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-
-                if partial is None:
-                    break
-                if isinstance(partial, tuple) and partial[0] == "__error__":
-                    stream_error = True
-                    break
-
-                # TTFT: tempo do 1º token
-                if t_ttft is None:
-                    t_ttft = time.time()
-                    print(f"[LLM] TTFT: {t_ttft - t_llm_start:.1f}s")
-
-                full_response = partial
-                await send_json_msg({"type": "text", "text": partial, "done": False})
-
-                # Checar frase completa pra TTS
-                remaining = partial[last_tts_end:]
-                end = _find_sentence_end(remaining)
-                if end > 0:
-                    sentence = remaining[:end].strip()
-                    if sentence and not cancel_event.is_set():
-                        t_tts_s = time.time()
-                        audio_bytes = await _tts_to_bytes(sentence, loop)
-                        if audio_bytes and not cancel_event.is_set():
-                            await ws.send_bytes(audio_bytes)
-                            tts_count += 1
-                            if t_tts_first is None:
-                                t_tts_first = time.time()
-                                print(f"[TTS] 1ª frase: \"{sentence[:40]}{'...' if len(sentence) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
-                        last_tts_end += end
-
-            t_llm_end = time.time()
-            if full_response:
-                print(f"[LLM] Resposta completa: {len(full_response)} chars em {t_llm_end - t_llm_start:.1f}s")
-
-            # Fallback sincrono se streaming falhou
-            if stream_error and not full_response and not cancel_event.is_set():
-                try:
-                    full_response = await loop.run_in_executor(
-                        None, ask_openclaw, transcript, TOKEN, api_history
-                    )
-                except Exception:
-                    await send_json_msg({
-                        "type": "error",
-                        "message": "Erro ao processar resposta. Tente novamente."
-                    })
-                    return
-
-            # TTS do texto restante (se nao foi interrompido)
-            if full_response and not cancel_event.is_set():
-                remaining_text = full_response[last_tts_end:].strip()
-                if remaining_text:
-                    t_tts_s = time.time()
-                    audio_bytes = await _tts_to_bytes(remaining_text, loop)
-                    if audio_bytes and not cancel_event.is_set():
-                        await ws.send_bytes(audio_bytes)
-                        tts_count += 1
-                        if t_tts_first is None:
-                            t_tts_first = time.time()
-                            print(f"[TTS] 1ª frase: \"{remaining_text[:40]}{'...' if len(remaining_text) > 40 else ''}\" ({t_tts_first - t_tts_s:.1f}s)")
-
-                await send_json_msg({"type": "text", "text": full_response, "done": True})
-                chat_history.append({"role": "assistant", "content": full_response})
-            elif full_response:
-                # Interrompido — salvar texto parcial
-                await send_json_msg({"type": "text", "text": full_response, "done": True})
-                chat_history.append({"role": "assistant", "content": full_response + " [interrompido]"})
+            await _llm_and_tts(transcript)
 
             t_total = time.time() - t0
-            if tts_count > 0:
-                print(f"[TTS] Total: {tts_count} frases")
             print(f"[TOTAL] Fala→Resposta: {t_total:.1f}s")
+
+        except Exception as e:
+            traceback.print_exc()
+            await send_json_msg({
+                "type": "error",
+                "message": f"Erro interno: {e}"
+            })
+
+        finally:
+            processing = False
+            if not cancel_event.is_set():
+                await send_status("listening")
+
+    async def process_text(user_text):
+        """Processa texto digitado: LLM -> TTS (sem STT)."""
+        nonlocal processing, chat_history
+        processing = True
+        cancel_event.clear()
+
+        try:
+            t0 = time.time()
+            print(f"\n[REQ] Texto digitado: \"{user_text[:50]}{'...' if len(user_text) > 50 else ''}\"")
+
+            await send_json_msg({"type": "transcript", "text": user_text})
+            await send_status("thinking")
+
+            chat_history.append({"role": "user", "content": user_text})
+            if len(chat_history) > MAX_HISTORY * 2:
+                chat_history = chat_history[-(MAX_HISTORY * 2):]
+
+            await _llm_and_tts(user_text)
+
+            t_total = time.time() - t0
+            print(f"[TOTAL] Texto→Resposta: {t_total:.1f}s")
 
         except Exception as e:
             traceback.print_exc()
@@ -293,6 +329,11 @@ async def websocket_endpoint(ws: WebSocket):
                             except asyncio.TimeoutError:
                                 pass
                         await send_status("listening")
+
+                elif data["type"] == "text_input":
+                    user_text = data.get("text", "").strip()
+                    if user_text and not processing:
+                        process_task = asyncio.create_task(process_text(user_text))
 
                 elif data["type"] == "config":
                     # TODO: permitir mudar modelo/whisper/tts via WS
