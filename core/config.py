@@ -25,7 +25,7 @@ def _detect_gateway_url():
 GATEWAY_URL = _detect_gateway_url()
 MODEL = os.environ.get("OPENCLAW_MODEL", "anthropic/claude-sonnet-4-6")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper", "edge" ou "kokoro"
 PIPER_MODEL = os.path.join(PROJECT_DIR, "models", "pt_BR-faber-medium.onnx")
 

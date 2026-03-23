@@ -389,6 +389,7 @@ body {
 .config-status {
     font-size: 0.8rem;
 }
+.config-engine { font-size: 0.8rem; color: #4caf50; font-weight: 600; display: block; margin-bottom: 4px; }
 
 @media (max-width: 600px) {
     .message { max-width: 90%; }
@@ -436,6 +437,21 @@ body {
             <option value="medium">Medium — lento, mais preciso</option>
         </select>
         <small>Aplica na próxima sessão (requer reconexão).</small>
+    </div>
+
+    <div class="config-group">
+        <label>Voz da resposta</label>
+        <span class="config-engine" id="cfgEngineLabel">Engine: —</span>
+        <select id="cfgVoice"><option value="">Conecte para ver vozes</option></select>
+        <small>Muda imediatamente na próxima resposta.</small>
+    </div>
+    <div class="config-group">
+        <label for="cfgSpeed">Velocidade da fala</label>
+        <div class="config-row">
+            <input type="range" id="cfgSpeed" min="0.5" max="2.0" step="0.1" value="1.0">
+            <span id="cfgSpeedLabel">1.0x</span>
+        </div>
+        <small>0.5x (lento) a 2.0x (rápido). Piper ignora esta configuração.</small>
     </div>
 
     <button class="btn" onclick="saveConfig()">Salvar configurações</button>
@@ -580,7 +596,36 @@ function connect() {
             enqueueAudio(event.data);
         } else {
             const data = JSON.parse(event.data);
-            switch (data.type) {
+            if (data.type === 'server_info') {
+                console.log('Server info:', data);
+                window._serverInfo = data;
+
+                const engineLabel = document.getElementById('cfgEngineLabel');
+                if (engineLabel) {
+                    const names = {kokoro: 'Kokoro (local, neural)', edge: 'Edge TTS (online)', piper: 'Piper (local)'};
+                    engineLabel.textContent = 'Engine: ' + (names[data.tts_engine] || data.tts_engine);
+                }
+
+                const voiceSelect = document.getElementById('cfgVoice');
+                if (voiceSelect && data.tts_voices) {
+                    voiceSelect.innerHTML = '';
+                    data.tts_voices.forEach(v => {
+                        const opt = document.createElement('option');
+                        opt.value = v.id;
+                        opt.textContent = v.name;
+                        if (v.id === data.tts_voice) opt.selected = true;
+                        voiceSelect.appendChild(opt);
+                    });
+                    voiceSelect.disabled = data.tts_voices.length <= 1;
+                }
+
+                const speedSlider = document.getElementById('cfgSpeed');
+                const speedLabel = document.getElementById('cfgSpeedLabel');
+                if (speedSlider && data.tts_speed !== undefined) {
+                    speedSlider.value = data.tts_speed;
+                    speedLabel.textContent = data.tts_speed.toFixed(1) + 'x';
+                }
+            } else switch (data.type) {
                 case 'status': handleStatus(data.status); break;
                 case 'transcript':
                     if (!pendingTextInput) addUserMessage(data.text);
@@ -989,6 +1034,24 @@ document.getElementById('cfgVolume').addEventListener('input', (e) => {
     document.getElementById('cfgVolumeLabel').textContent = val + '%';
     if (window._playbackGain) {
         window._playbackGain.gain.value = val / 100;
+    }
+});
+
+// Voice selector
+document.getElementById('cfgVoice').addEventListener('change', (e) => {
+    if (e.target.value && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type: 'config', tts_voice: e.target.value}));
+    }
+});
+
+// Speed slider: label em tempo real
+document.getElementById('cfgSpeed').addEventListener('input', (e) => {
+    document.getElementById('cfgSpeedLabel').textContent = parseFloat(e.target.value).toFixed(1) + 'x';
+});
+// Speed slider: enviar ao server ao soltar
+document.getElementById('cfgSpeed').addEventListener('change', (e) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type: 'config', tts_speed: parseFloat(e.target.value)}));
     }
 });
 

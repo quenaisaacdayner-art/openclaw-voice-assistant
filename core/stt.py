@@ -38,13 +38,18 @@ def set_whisper_model(model_name):
         print(f"[STT] Modelo Whisper será alterado para '{model_name}' na próxima transcrição")
 
 
+def get_current_model():
+    """Retorna o nome do modelo Whisper atual."""
+    return _current_model_size
+
+
 def init_stt():
     """Pre-warm: carrega modelo Whisper no startup."""
     import time
     t0 = time.time()
     _get_whisper()
     elapsed = time.time() - t0
-    print(f"[WARMUP] Whisper ({WHISPER_MODEL_SIZE}) carregado em {elapsed:.1f}s")
+    print(f"[WARMUP] Whisper ({_current_model_size}) carregado em {elapsed:.1f}s")
 
 
 def transcribe_audio(audio_input):

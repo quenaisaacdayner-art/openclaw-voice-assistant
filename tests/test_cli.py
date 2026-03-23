@@ -31,7 +31,7 @@ class TestDefaults:
         assert config.TTS_VOICE == "pt-BR-AntonioNeural"
 
     def test_default_whisper_model(self):
-        assert config.WHISPER_MODEL_SIZE == "tiny"
+        assert config.WHISPER_MODEL_SIZE == "small"
 
     def test_sample_rate(self):
         assert cli.SAMPLE_RATE == 16000

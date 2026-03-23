@@ -15,8 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from core.config import load_token, GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE
-from core.stt import transcribe_audio, init_stt
-from core.tts import init_tts, warmup_tts, generate_tts
+from core.stt import transcribe_audio, init_stt, get_current_model
+from core.tts import (init_tts, warmup_tts, generate_tts,
+                      _tts_engine, kokoro_instance, piper_voice, KOKORO_VOICE,
+                      get_available_voices, get_current_voice, get_speed)
 from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end
 from core.history import build_api_history, MAX_HISTORY
 
@@ -31,6 +33,18 @@ _warmup_t0 = time.time()
 
 init_stt()
 warmup_tts()
+
+# TTS engine banner
+if _tts_engine == "kokoro" and kokoro_instance is not None:
+    _tts_info = f"Kokoro (voz: {KOKORO_VOICE}, local)"
+elif _tts_engine == "piper" and piper_voice is not None:
+    _tts_info = "Piper (faber-medium, local)"
+elif _tts_engine == "edge":
+    from core.tts import _edge_voice
+    _tts_info = f"Edge TTS ({_edge_voice}, online)"
+else:
+    _tts_info = f"{_tts_engine} (desconhecido)"
+print(f"🔊 TTS Engine: {_tts_info}")
 
 # Gateway ping
 _gw_t0 = time.time()
@@ -70,6 +84,17 @@ async def index():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+
+    # Enviar info do servidor ao conectar
+    server_info = {
+        "type": "server_info",
+        "tts_engine": _tts_engine,
+        "tts_voice": get_current_voice(),
+        "tts_voices": get_available_voices(),
+        "tts_speed": get_speed(),
+        "whisper_model": get_current_model(),
+    }
+    await ws.send_json(server_info)
 
     chat_history = []  # [{"role": "user/assistant", "content": "..."}]
     audio_buffer = bytearray()  # PCM 16-bit, 16kHz, mono
@@ -341,6 +366,16 @@ async def websocket_endpoint(ws: WebSocket):
                         from core.stt import set_whisper_model
                         set_whisper_model(whisper_model)
                         print(f"[CONFIG] Whisper model → {whisper_model}")
+
+                    voice = data.get("tts_voice")
+                    if voice:
+                        from core.tts import set_voice
+                        set_voice(voice)
+
+                    speed = data.get("tts_speed")
+                    if speed is not None:
+                        from core.tts import set_speed
+                        set_speed(float(speed))
 
     except WebSocketDisconnect:
         if process_task and not process_task.done():

@@ -37,12 +37,33 @@ try:
 except ImportError:
     KOKORO_AVAILABLE = False
 
+AVAILABLE_VOICES = {
+    "kokoro": [
+        {"id": "pm_alex", "name": "Alex (Masculino)", "gender": "M"},
+        {"id": "pf_dora", "name": "Dora (Feminino)", "gender": "F"},
+    ],
+    "edge": [
+        {"id": "pt-BR-AntonioNeural", "name": "Antonio (Masculino)", "gender": "M"},
+        {"id": "pt-BR-FranciscaNeural", "name": "Francisca (Feminino)", "gender": "F"},
+        {"id": "pt-BR-ThalitaNeural", "name": "Thalita (Feminino)", "gender": "F"},
+        {"id": "pt-BR-BrendaNeural", "name": "Brenda (Feminino)", "gender": "F"},
+        {"id": "pt-BR-DonatoNeural", "name": "Donato (Masculino)", "gender": "M"},
+        {"id": "pt-BR-ElzaNeural", "name": "Elza (Feminino)", "gender": "F"},
+    ],
+    "piper": [
+        {"id": "pt_BR-faber-medium", "name": "Faber (Masculino)", "gender": "M"},
+    ],
+}
+
 # Globais do módulo
 piper_voice = None
 kokoro_instance = None
 _old_tts_files = []  # lista de arquivos pra limpar (com delay)
 _previous_tts_file = None
 _tts_engine = TTS_ENGINE  # cópia mutável (pode mudar se engine indisponível)
+_kokoro_voice = KOKORO_VOICE   # default: "pm_alex"
+_edge_voice = TTS_VOICE        # default: "pt-BR-AntonioNeural"
+_tts_speed = 1.0               # 0.5 a 2.0
 
 
 def _download_file(url, path):
@@ -154,6 +175,48 @@ def init_tts():
         print(f"✅ Edge TTS ({TTS_VOICE})")
 
 
+def get_available_voices():
+    return AVAILABLE_VOICES.get(_tts_engine, [])
+
+
+def get_current_voice():
+    if _tts_engine == "kokoro": return _kokoro_voice
+    elif _tts_engine == "edge": return _edge_voice
+    elif _tts_engine == "piper": return "pt_BR-faber-medium"
+    return ""
+
+
+def set_voice(voice_id):
+    global _kokoro_voice, _edge_voice
+    available = AVAILABLE_VOICES.get(_tts_engine, [])
+    valid_ids = [v["id"] for v in available]
+    if voice_id not in valid_ids:
+        print(f"[TTS] Voz '{voice_id}' inválida. Disponíveis: {valid_ids}")
+        return False
+    if _tts_engine == "kokoro":
+        old = _kokoro_voice; _kokoro_voice = voice_id
+        print(f"[TTS] Voz: {old} → {voice_id}")
+    elif _tts_engine == "edge":
+        old = _edge_voice; _edge_voice = voice_id
+        print(f"[TTS] Voz: {old} → {voice_id}")
+    else:
+        return False
+    return True
+
+
+def get_speed():
+    return _tts_speed
+
+
+def set_speed(speed):
+    global _tts_speed
+    speed = max(0.5, min(2.0, float(speed)))
+    old = _tts_speed
+    _tts_speed = speed
+    if old != speed: print(f"[TTS] Velocidade: {old}x → {speed}x")
+    return True
+
+
 def warmup_tts():
     """Pre-warm: gera TTS dummy pra abrir conexões."""
     import time
@@ -186,7 +249,7 @@ def generate_tts_kokoro(text):
     try:
         import soundfile as sf
         samples, sample_rate = kokoro_instance.create(
-            text, voice=KOKORO_VOICE, speed=1.0, lang=KOKORO_LANG
+            text, voice=_kokoro_voice, speed=_tts_speed, lang=KOKORO_LANG
         )
         sf.write(tmp.name, samples, sample_rate)
 
@@ -232,7 +295,11 @@ def generate_tts_edge(text):
 
     try:
         async def _gen():
-            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            kwargs = {"voice": _edge_voice}
+            if _tts_speed != 1.0:
+                pct = round((_tts_speed - 1.0) * 100)
+                kwargs["rate"] = f"+{pct}%" if pct > 0 else f"{pct}%"
+            communicate = edge_tts.Communicate(text, **kwargs)
             await communicate.save(tmp.name)
 
         # Gradio 6.x roda seu próprio event loop — asyncio.run() crasharia.
