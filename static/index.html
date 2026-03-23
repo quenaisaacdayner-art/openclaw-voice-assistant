@@ -198,6 +198,8 @@ body {
         <button class="btn mic-btn" id="micBtn" onclick="toggleMute()" title="Mute/Unmute">🎤</button>
         <span class="status-text" id="bottomStatus">Clique para iniciar</span>
         <button class="btn" id="startBtn" onclick="start()">Iniciar</button>
+        <button class="btn" id="disconnectBtn" onclick="disconnect()" style="display:none">Encerrar</button>
+        <button class="btn" id="interruptBtn" onclick="manualInterrupt()" style="display:none">⏹️</button>
     </div>
 </div>
 
@@ -254,6 +256,9 @@ async function start() {
     startBtn.disabled = true;
     bottomStatus.textContent = 'Conectando...';
 
+    startBtn.style.display = 'none';
+    document.getElementById('disconnectBtn').style.display = '';
+
     await startMic();
     connect();
 }
@@ -297,6 +302,10 @@ function connect() {
 
 function handleStatus(status) {
     serverSpeaking = (status === 'speaking');
+
+    // Mostrar botão interrupt durante thinking/speaking
+    const interruptBtn = document.getElementById('interruptBtn');
+    interruptBtn.style.display = (status === 'thinking' || status === 'speaking') ? '' : 'none';
 
     switch (status) {
         case 'listening':
@@ -492,6 +501,68 @@ function stopPlayback() {
     }
     playbackQueue = [];
     isPlaying = false;
+}
+
+// ─── Disconnect ─────────────────────────────────────
+function disconnect() {
+    // 1. Fechar WebSocket
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (ws) {
+        ws.onclose = null;  // Não reconectar
+        ws.close();
+        ws = null;
+    }
+
+    // 2. Parar microfone
+    if (processor) {
+        processor.disconnect();
+        processor = null;
+    }
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
+
+    // 3. Parar playback
+    stopPlayback();
+    playbackContext = null;
+
+    // 4. Reset estado
+    started = false;
+    isMuted = false;
+    isSpeechDetected = false;
+    speechStartTime = 0;
+    silenceStartTime = 0;
+    serverSpeaking = false;
+
+    // 5. Reset UI
+    startBtn.textContent = 'Iniciar';
+    startBtn.disabled = false;
+    micBtn.classList.remove('active');
+    micBtn.textContent = '🎤';
+    bottomStatus.textContent = 'Clique para iniciar';
+    volumeBar.style.width = '0%';
+    setStatus('disconnected', 'Desconectado');
+
+    // 6. Esconder botão Encerrar e Interrupt, mostrar Iniciar
+    document.getElementById('disconnectBtn').style.display = 'none';
+    document.getElementById('interruptBtn').style.display = 'none';
+    startBtn.style.display = '';
+}
+
+// ─── Interrupt Manual ───────────────────────────────
+function manualInterrupt() {
+    stopPlayback();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type: 'interrupt'}));
+    }
 }
 
 // ─── Mute ────────────────────────────────────────────
