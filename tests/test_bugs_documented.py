@@ -177,14 +177,14 @@ class TestAskOpenClawErrorHandlingUnified:
 
     def test_connection_error_returns_error_string(self):
         import requests as req
-        with patch.object(core.llm.requests, "post", side_effect=req.ConnectionError()):
+        with patch.object(core.llm._session, "post", side_effect=req.ConnectionError()):
             result = core.llm.ask_openclaw("test", "tok", [])
             assert isinstance(result, str)
             assert result.startswith("❌")
 
     def test_timeout_returns_error_string(self):
         import requests as req
-        with patch.object(core.llm.requests, "post", side_effect=req.Timeout()):
+        with patch.object(core.llm._session, "post", side_effect=req.Timeout()):
             result = core.llm.ask_openclaw("test", "tok", [])
             assert isinstance(result, str)
             assert "Timeout" in result
@@ -198,13 +198,13 @@ class TestBugStreamingNoPreIterationErrorHandling:
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = req.HTTPError("401 Unauthorized")
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             with pytest.raises(req.HTTPError):
                 list(core.llm.ask_openclaw_stream("test", "tok", []))
 
     def test_connection_error_propagates_from_stream(self):
         import requests as req
-        with patch.object(core.llm.requests, "post", side_effect=req.ConnectionError()):
+        with patch.object(core.llm._session, "post", side_effect=req.ConnectionError()):
             with pytest.raises(req.ConnectionError):
                 list(core.llm.ask_openclaw_stream("test", "tok", []))
 

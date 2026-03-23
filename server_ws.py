@@ -9,7 +9,6 @@ import asyncio
 import traceback
 
 import numpy as np
-import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -19,7 +18,7 @@ from core.stt import transcribe_audio, init_stt, get_current_model
 from core.tts import (init_tts, warmup_tts, generate_tts,
                       get_engine, get_tts_info,
                       get_available_voices, get_current_voice, get_speed)
-from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end
+from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end, _session as llm_session
 from core.history import build_api_history, MAX_HISTORY
 
 app = FastAPI()
@@ -37,17 +36,16 @@ warmup_tts()
 # TTS engine banner
 print(f"🔊 TTS Engine: {get_tts_info()}")
 
-# Gateway ping
+# Gateway ping (via session keep-alive)
 _gw_t0 = time.time()
 try:
-    # Extrair URL base (sem /chat/completions)
     _gw_base = GATEWAY_URL.rsplit("/chat/completions", 1)[0]
-    _gw_resp = requests.get(_gw_base, timeout=10, headers={"Authorization": f"Bearer {TOKEN}"})
+    _gw_resp = llm_session.get(_gw_base, timeout=10, headers={"Authorization": f"Bearer {TOKEN}"})
     _gw_elapsed = time.time() - _gw_t0
-    print(f"[WARMUP] Gateway OK em {_gw_elapsed:.1f}s")
+    print(f"[WARMUP] Gateway OK em {_gw_elapsed:.1f}s (keep-alive)")
 except Exception:
     _gw_elapsed = time.time() - _gw_t0
-    print(f"[WARMUP] ⚠️ Gateway não respondeu — vai conectar na 1ª mensagem")
+    print(f"[WARMUP] ⚠️ Gateway não respondeu — conecta na 1ª mensagem")
 
 print(f"[WARMUP] Tudo pronto em {time.time() - _warmup_t0:.1f}s")
 
@@ -101,8 +99,8 @@ async def websocket_endpoint(ws: WebSocket):
     async def send_status(status):
         await send_json_msg({"type": "status", "status": status})
 
-    async def _llm_and_tts(user_text):
-        """LLM streaming + TTS por frase. Bloco compartilhado por speech e text."""
+    async def _llm_and_tts(user_text, t_start=None):
+        """LLM streaming + TTS por frase. Retorna dict com métricas."""
         nonlocal chat_history
 
         api_history = build_api_history(chat_history[:-1])
@@ -211,6 +209,19 @@ async def websocket_endpoint(ws: WebSocket):
         if tts_count > 0:
             print(f"[TTS] Total: {tts_count} frases")
 
+        metrics = {
+            "ttft": t_ttft - t_llm_start if t_ttft else None,
+            "tts_first": t_tts_first,
+            "tts_count": tts_count,
+            "response_len": len(full_response),
+        }
+
+        if t_start and t_tts_first:
+            ttfa = t_tts_first - t_start
+            print(f"[PERF] ⚡ Time-to-First-Audio: {ttfa:.1f}s")
+
+        return metrics
+
     async def process_speech():
         """Processa audio acumulado: STT -> LLM -> TTS"""
         nonlocal processing, chat_history
@@ -256,10 +267,18 @@ async def websocket_endpoint(ws: WebSocket):
                 chat_history = chat_history[-(MAX_HISTORY * 2):]
 
             # 3. LLM streaming + TTS por frase
-            await _llm_and_tts(transcript)
+            metrics = await _llm_and_tts(transcript, t_start=t0)
 
             t_total = time.time() - t0
             print(f"[TOTAL] Fala→Resposta: {t_total:.1f}s")
+
+            if metrics:
+                perf_msg = {"type": "perf"}
+                if metrics.get("ttft"):
+                    perf_msg["ttft"] = round(metrics["ttft"], 1)
+                if metrics.get("tts_first"):
+                    perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
+                await send_json_msg(perf_msg)
 
         except Exception as e:
             traceback.print_exc()
@@ -290,10 +309,18 @@ async def websocket_endpoint(ws: WebSocket):
             if len(chat_history) > MAX_HISTORY * 2:
                 chat_history = chat_history[-(MAX_HISTORY * 2):]
 
-            await _llm_and_tts(user_text)
+            metrics = await _llm_and_tts(user_text, t_start=t0)
 
             t_total = time.time() - t0
             print(f"[TOTAL] Texto→Resposta: {t_total:.1f}s")
+
+            if metrics:
+                perf_msg = {"type": "perf"}
+                if metrics.get("ttft"):
+                    perf_msg["ttft"] = round(metrics["ttft"], 1)
+                if metrics.get("tts_first"):
+                    perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
+                await send_json_msg(perf_msg)
 
         except Exception as e:
             traceback.print_exc()

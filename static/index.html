@@ -625,6 +625,8 @@ function connect() {
                     speedSlider.value = data.tts_speed;
                     speedLabel.textContent = data.tts_speed.toFixed(1) + 'x';
                 }
+            } else if (data.type === 'perf') {
+                console.log(`[PERF] TTFT: ${data.ttft}s | TTFA: ${data.ttfa}s`);
             } else switch (data.type) {
                 case 'status': handleStatus(data.status); break;
                 case 'transcript':

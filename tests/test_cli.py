@@ -184,7 +184,7 @@ class TestAskOpenClaw:
         mock_resp.json.return_value = mock_openai_response
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             from core.llm import ask_openclaw
             result = ask_openclaw("olá", "token123", [])
             assert result == "Resposta do agente OpenClaw."
@@ -200,7 +200,7 @@ class TestAskOpenClaw:
             {"role": "assistant", "content": "resp anterior"},
         ]
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp) as mock_post:
+        with patch.object(core.llm._session, "post", return_value=mock_resp) as mock_post:
             from core.llm import ask_openclaw
             ask_openclaw("nova msg", "tok", history)
             sent_body = mock_post.call_args[1]["json"]
@@ -212,7 +212,7 @@ class TestAskOpenClaw:
         """Unified: returns error string (not None)."""
         import core.llm
         import requests as req
-        with patch.object(core.llm.requests, "post", side_effect=req.ConnectionError()):
+        with patch.object(core.llm._session, "post", side_effect=req.ConnectionError()):
             from core.llm import ask_openclaw
             result = ask_openclaw("olá", "tok", [])
             assert isinstance(result, str)
@@ -222,7 +222,7 @@ class TestAskOpenClaw:
         """Unified: returns error string (not None)."""
         import core.llm
         import requests as req
-        with patch.object(core.llm.requests, "post", side_effect=req.Timeout()):
+        with patch.object(core.llm._session, "post", side_effect=req.Timeout()):
             from core.llm import ask_openclaw
             result = ask_openclaw("olá", "tok", [])
             assert isinstance(result, str)
@@ -234,7 +234,7 @@ class TestAskOpenClaw:
         mock_resp.json.return_value = mock_openai_response
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp) as mock_post:
+        with patch.object(core.llm._session, "post", return_value=mock_resp) as mock_post:
             from core.llm import ask_openclaw
             ask_openclaw("olá", "my-secret-token", [])
             headers = mock_post.call_args[1]["headers"]
@@ -249,7 +249,7 @@ class TestAskOpenClaw:
         history = [{"role": "user", "content": "old"}]
         original_len = len(history)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             from core.llm import ask_openclaw
             ask_openclaw("new", "tok", history)
             assert len(history) == original_len

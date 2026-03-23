@@ -78,7 +78,10 @@ def transcribe_audio(audio_input):
             language="pt",
             beam_size=5,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            vad_parameters=dict(
+                min_silence_duration_ms=300,      # era 500 — reduzir pra pular silêncios internos mais rápido
+                speech_pad_ms=100,                 # padding em torno de fala detectada (default 400 — reduzir)
+            ),
         )
         text = " ".join(seg.text for seg in segments).strip()
         return text

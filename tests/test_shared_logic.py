@@ -27,7 +27,7 @@ class TestSSEStreaming:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_lines.return_value = iter(mock_openai_stream_lines)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             results = list(core.llm.ask_openclaw_stream("test", "tok", []))
 
         assert len(results) == 5
@@ -46,7 +46,7 @@ class TestSSEStreaming:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_lines.return_value = iter(lines)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             results = list(core.llm.ask_openclaw_stream("test", "tok", []))
         assert results == ["ok"]
 
@@ -61,7 +61,7 @@ class TestSSEStreaming:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_lines.return_value = iter(lines)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             results = list(core.llm.ask_openclaw_stream("test", "tok", []))
         assert results == ["sim"]
 
@@ -75,7 +75,7 @@ class TestSSEStreaming:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_lines.return_value = iter(lines)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             results = list(core.llm.ask_openclaw_stream("test", "tok", []))
         assert results == ["fim"]
 
@@ -85,7 +85,7 @@ class TestSSEStreaming:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.iter_lines.return_value = iter(lines)
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp) as mock_post:
+        with patch.object(core.llm._session, "post", return_value=mock_resp) as mock_post:
             list(core.llm.ask_openclaw_stream("test", "tok", []))
             body = mock_post.call_args[1]["json"]
             assert body["stream"] is True

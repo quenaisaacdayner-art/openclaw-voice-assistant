@@ -7,6 +7,9 @@ import requests
 
 from core.config import GATEWAY_URL, MODEL
 
+# Sessão HTTP persistente — reutiliza conexão TCP (keep-alive)
+_session = requests.Session()
+
 
 def ask_openclaw(text, token, history_messages):
     """Envia texto pro gateway OpenClaw. Retorna resposta ou string de erro."""
@@ -18,7 +21,7 @@ def ask_openclaw(text, token, history_messages):
     body = {"model": MODEL, "messages": messages}
 
     try:
-        resp = requests.post(GATEWAY_URL, headers=headers, json=body, timeout=120)
+        resp = _session.post(GATEWAY_URL, headers=headers, json=body, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
@@ -39,7 +42,7 @@ def ask_openclaw_stream(text, token, history_messages):
     messages = list(history_messages) + [{"role": "user", "content": text}]
     body = {"model": MODEL, "messages": messages, "stream": True}
 
-    resp = requests.post(
+    resp = _session.post(
         GATEWAY_URL, headers=headers, json=body, timeout=120, stream=True
     )
     resp.raise_for_status()
@@ -66,8 +69,9 @@ def _find_sentence_end(text):
 
     Prioridade:
     1. Pontuação forte (.!?…) seguida de espaço ou fim
-    2. Ponto-e-vírgula ou dois-pontos seguidos de espaço
-    3. Vírgula seguida de espaço (só se texto > 80 chars — evita splits muito curtos)
+    2. Quebra de linha (\n) — LLMs geram \n entre frases/itens de lista
+    3. Ponto-e-vírgula ou dois-pontos seguidos de espaço
+    4. Vírgula seguida de espaço (só se texto > 50 chars — evita splits muito curtos)
 
     Retorna posição APÓS o separador (incluindo o espaço). 0 se não encontrou.
     """
@@ -76,13 +80,22 @@ def _find_sentence_end(text):
     if m:
         return m.end()
 
-    # Prioridade 2: ponto-e-vírgula, dois-pontos
+    # Prioridade 2: quebra de linha
+    idx = text.find('\n')
+    if idx >= 0:
+        # Retorna posição após o \n (e quaisquer \n consecutivos)
+        end = idx + 1
+        while end < len(text) and text[end] == '\n':
+            end += 1
+        return end
+
+    # Prioridade 3: ponto-e-vírgula, dois-pontos
     m = re.search(r'[;:](\s|$)', text)
     if m:
         return m.end()
 
-    # Prioridade 3: vírgula (só se texto longo o suficiente)
-    if len(text) > 80:
+    # Prioridade 4: vírgula (só se texto longo o suficiente)
+    if len(text) > 50:
         m = re.search(r',\s', text)
         if m:
             return m.end()

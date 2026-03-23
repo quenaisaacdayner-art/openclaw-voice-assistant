@@ -78,7 +78,7 @@ class TestAskOpenClawExtended:
         mock_resp.json.return_value = {"not_choices": []}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             result = core.llm.ask_openclaw("olá", "tok", [])
             assert isinstance(result, str)
             assert "❌" in result
@@ -89,7 +89,7 @@ class TestAskOpenClawExtended:
         mock_resp.json.return_value = {"choices": []}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp):
+        with patch.object(core.llm._session, "post", return_value=mock_resp):
             result = core.llm.ask_openclaw("olá", "tok", [])
             assert isinstance(result, str)
             assert "❌" in result
@@ -99,7 +99,7 @@ class TestAskOpenClawExtended:
         mock_resp.json.return_value = mock_openai_response
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp) as mock_post:
+        with patch.object(core.llm._session, "post", return_value=mock_resp) as mock_post:
             core.llm.ask_openclaw("olá", "tok", [])
             body = mock_post.call_args[1]["json"]
             assert body["model"] == config.MODEL
@@ -109,13 +109,13 @@ class TestAskOpenClawExtended:
         mock_resp.json.return_value = mock_openai_response
         mock_resp.raise_for_status = MagicMock()
 
-        with patch.object(core.llm.requests, "post", return_value=mock_resp) as mock_post:
+        with patch.object(core.llm._session, "post", return_value=mock_resp) as mock_post:
             core.llm.ask_openclaw("olá", "tok", [])
             assert mock_post.call_args[1]["timeout"] == 120
 
     def test_generic_request_exception_returns_error_string(self):
         import requests as req
-        with patch.object(core.llm.requests, "post",
+        with patch.object(core.llm._session, "post",
                     side_effect=req.RequestException("generic")):
             result = core.llm.ask_openclaw("olá", "tok", [])
             assert isinstance(result, str)
