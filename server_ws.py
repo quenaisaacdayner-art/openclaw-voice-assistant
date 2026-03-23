@@ -336,8 +336,11 @@ async def websocket_endpoint(ws: WebSocket):
                         process_task = asyncio.create_task(process_text(user_text))
 
                 elif data["type"] == "config":
-                    # TODO: permitir mudar modelo/whisper/tts via WS
-                    pass
+                    whisper_model = data.get("whisper_model")
+                    if whisper_model and whisper_model in ("tiny", "small", "medium"):
+                        from core.stt import set_whisper_model
+                        set_whisper_model(whisper_model)
+                        print(f"[CONFIG] Whisper model → {whisper_model}")
 
     except WebSocketDisconnect:
         if process_task and not process_task.done():

@@ -12,6 +12,7 @@ from core.config import WHISPER_MODEL_SIZE
 
 _whisper_model = None
 _whisper_lock = threading.Lock()
+_current_model_size = WHISPER_MODEL_SIZE
 
 
 def _get_whisper():
@@ -20,12 +21,21 @@ def _get_whisper():
     if _whisper_model is None:
         with _whisper_lock:
             if _whisper_model is None:
-                print(f"⏳ Carregando Whisper ({WHISPER_MODEL_SIZE})...")
+                print(f"⏳ Carregando Whisper ({_current_model_size})...")
                 _whisper_model = WhisperModel(
-                    WHISPER_MODEL_SIZE, device="cpu", compute_type="int8"
+                    _current_model_size, device="cpu", compute_type="int8"
                 )
                 print("✅ Whisper pronto")
     return _whisper_model
+
+
+def set_whisper_model(model_name):
+    """Muda o modelo Whisper em runtime. O próximo transcribe_audio() usará o novo modelo."""
+    global _whisper_model, _current_model_size
+    if model_name != _current_model_size:
+        _current_model_size = model_name
+        _whisper_model = None
+        print(f"[STT] Modelo Whisper será alterado para '{model_name}' na próxima transcrição")
 
 
 def init_stt():

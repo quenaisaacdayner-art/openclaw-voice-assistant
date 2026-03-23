@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenClaw Voice Assistant</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -280,6 +281,115 @@ body {
 .orb.listening.vol-mid { transform: scale(1.08); }
 .orb.listening.vol-high { transform: scale(1.15); box-shadow: 0 0 50px rgba(76, 175, 80, 0.7); }
 
+/* Markdown in assistant messages */
+.message.assistant .text {
+    line-height: 1.6;
+}
+.message.assistant .text p {
+    margin: 0 0 8px 0;
+}
+.message.assistant .text p:last-child {
+    margin-bottom: 0;
+}
+.message.assistant .text code {
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+}
+.message.assistant .text pre {
+    background: #1a1a2e;
+    padding: 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+.message.assistant .text pre code {
+    background: none;
+    padding: 0;
+}
+.message.assistant .text ul, .message.assistant .text ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+.message.assistant .text strong {
+    color: #fff;
+}
+.message.assistant .text a {
+    color: #4caf50;
+    text-decoration: none;
+}
+.message.assistant .text a:hover {
+    text-decoration: underline;
+}
+
+/* Config panel */
+.config-toggle {
+    font-size: 1.2rem;
+    padding: 4px 8px;
+    background: transparent;
+}
+.config-toggle:hover {
+    background: #2d2d44;
+}
+
+.config-panel {
+    background: #16162a;
+    border-bottom: 1px solid #2d2d44;
+    padding: 16px;
+    flex-shrink: 0;
+}
+.config-group {
+    margin-bottom: 12px;
+}
+.config-group label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #ccc;
+}
+.config-group small {
+    display: block;
+    font-size: 0.75rem;
+    color: #888;
+    margin-top: 2px;
+}
+.config-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.config-panel input[type="text"] {
+    flex: 1;
+    background: #2d2d44;
+    border: 1px solid #3d3d54;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+.config-panel input[type="text"]:focus {
+    border-color: #4caf50;
+    outline: none;
+}
+.config-panel input[type="range"] {
+    flex: 1;
+}
+.config-panel select {
+    width: 100%;
+    background: #2d2d44;
+    border: 1px solid #3d3d54;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+.config-status {
+    font-size: 0.8rem;
+}
+
 @media (max-width: 600px) {
     .message { max-width: 90%; }
     .status-bar h1 { font-size: 0.95rem; }
@@ -293,10 +403,42 @@ body {
 
 <div class="status-bar">
     <h1>OpenClaw Voice Assistant</h1>
+    <button class="btn config-toggle" id="configToggle" onclick="toggleConfig()" title="Configurações">⚙️</button>
     <div class="status-indicator">
         <div class="status-dot disconnected" id="statusDot"></div>
         <span id="statusText">Desconectado</span>
     </div>
+</div>
+
+<div class="config-panel" id="configPanel" style="display:none">
+    <div class="config-group">
+        <label for="cfgGateway">Gateway URL</label>
+        <div class="config-row">
+            <input type="text" id="cfgGateway" placeholder="http://127.0.0.1:18789/v1/chat/completions">
+            <span class="config-status" id="cfgGatewayStatus"></span>
+        </div>
+        <small>Deixe vazio para auto-detectar. Mude se a conexão automática falhar. Aplica no próximo reload.</small>
+    </div>
+
+    <div class="config-group">
+        <label for="cfgVolume">Volume da resposta</label>
+        <div class="config-row">
+            <input type="range" id="cfgVolume" min="0" max="100" value="100">
+            <span id="cfgVolumeLabel">100%</span>
+        </div>
+    </div>
+
+    <div class="config-group">
+        <label for="cfgWhisper">Modelo de transcrição</label>
+        <select id="cfgWhisper">
+            <option value="tiny">Tiny — rápido, menos preciso</option>
+            <option value="small">Small — equilibrado</option>
+            <option value="medium">Medium — lento, mais preciso</option>
+        </select>
+        <small>Aplica na próxima sessão (requer reconexão).</small>
+    </div>
+
+    <button class="btn" onclick="saveConfig()">Salvar configurações</button>
 </div>
 
 <div class="orb-container" id="orbContainer" style="display:none">
@@ -379,6 +521,14 @@ const errorToast = document.getElementById('errorToast');
 let currentAssistantEl = null;
 let reconnectTimer = null;
 
+// Marked.js config
+if (typeof marked !== 'undefined') {
+    marked.setOptions({
+        breaks: true,
+        gfm: true,
+    });
+}
+
 // ─── Start ───────────────────────────────────────────
 async function start() {
     if (started) return;
@@ -409,6 +559,12 @@ function connect() {
         setStatus('connected', 'Conectado');
         bottomStatus.textContent = 'Escutando...';
         document.getElementById('textInputBar').style.display = 'flex';
+
+        // Enviar config pro server
+        const whisper = localStorage.getItem('ova_whisper_model');
+        if (whisper) {
+            ws.send(JSON.stringify({type: 'config', whisper_model: whisper}));
+        }
     };
 
     ws.onclose = () => {
@@ -503,7 +659,12 @@ function updateAssistantMessage(text, done) {
         currentAssistantEl.innerHTML = `<div class="label">OpenClaw</div><span class="text"></span>`;
         chat.appendChild(currentAssistantEl);
     }
-    currentAssistantEl.querySelector('.text').textContent = text;
+    const textEl = currentAssistantEl.querySelector('.text');
+    if (typeof marked !== 'undefined') {
+        textEl.innerHTML = marked.parse(text);
+    } else {
+        textEl.textContent = text;
+    }
     scrollChat();
     if (done) {
         currentAssistantEl = null;
@@ -535,6 +696,17 @@ async function startMic() {
     // Usar sampleRate nativo do browser — downsample pra 16kHz no processamento
     audioContext = new AudioContext();
     playbackContext = audioContext;
+
+    // Gain node pra controle de volume do playback
+    const gainNode = audioContext.createGain();
+    gainNode.connect(audioContext.destination);
+    window._playbackGain = gainNode;
+
+    // Aplicar volume salvo
+    const savedVol = localStorage.getItem('ova_volume');
+    if (savedVol) {
+        gainNode.gain.value = parseInt(savedVol) / 100;
+    }
 
     const source = audioContext.createMediaStreamSource(mediaStream);
     processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -657,7 +829,11 @@ function playNext() {
     const source = playbackContext.createBufferSource();
     currentSource = source;
     source.buffer = buffer;
-    source.connect(playbackContext.destination);
+    if (window._playbackGain) {
+        source.connect(window._playbackGain);
+    } else {
+        source.connect(playbackContext.destination);
+    }
     source.onended = () => playNext();
     source.start();
 }
@@ -772,6 +948,51 @@ function toggleMute() {
         volumeBar.style.width = '0%';
     }
 }
+
+// ─── Config Panel ───────────────────────────────────
+function toggleConfig() {
+    const panel = document.getElementById('configPanel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function loadConfig() {
+    const gw = localStorage.getItem('ova_gateway_url');
+    const vol = localStorage.getItem('ova_volume');
+    const whisper = localStorage.getItem('ova_whisper_model');
+
+    if (gw) document.getElementById('cfgGateway').value = gw;
+    if (vol) {
+        document.getElementById('cfgVolume').value = vol;
+        document.getElementById('cfgVolumeLabel').textContent = vol + '%';
+    }
+    if (whisper) document.getElementById('cfgWhisper').value = whisper;
+}
+
+function saveConfig() {
+    const gw = document.getElementById('cfgGateway').value.trim();
+    const vol = document.getElementById('cfgVolume').value;
+    const whisper = document.getElementById('cfgWhisper').value;
+
+    if (gw) {
+        localStorage.setItem('ova_gateway_url', gw);
+    } else {
+        localStorage.removeItem('ova_gateway_url');
+    }
+    localStorage.setItem('ova_volume', vol);
+    localStorage.setItem('ova_whisper_model', whisper);
+
+    showError('✅ Configurações salvas. Recarregue para aplicar Gateway/Whisper.');
+}
+
+document.getElementById('cfgVolume').addEventListener('input', (e) => {
+    const val = parseInt(e.target.value);
+    document.getElementById('cfgVolumeLabel').textContent = val + '%';
+    if (window._playbackGain) {
+        window._playbackGain.gain.value = val / 100;
+    }
+});
+
+loadConfig();
 </script>
 </body>
 </html>
