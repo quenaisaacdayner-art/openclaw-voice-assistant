@@ -353,6 +353,32 @@ async def websocket_endpoint(ws: WebSocket):
             elif "text" in message:
                 data = json.loads(message["text"])
 
+                if data["type"] == "ping":
+                    await ws.send_json({"type": "pong", "t": data.get("t")})
+                    continue
+
+                elif data["type"] == "restore_history":
+                    restored = data.get("messages", [])
+                    if isinstance(restored, list):
+                        valid = []
+                        for msg in restored[-20:]:
+                            if (isinstance(msg, dict)
+                                and msg.get("role") in ("user", "assistant")
+                                and isinstance(msg.get("content"), str)
+                                and msg["content"].strip()):
+                                valid.append({
+                                    "role": msg["role"],
+                                    "content": msg["content"][:5000]
+                                })
+                        chat_history.clear()
+                        chat_history.extend(valid)
+                        print(f"[SESSION] Histórico restaurado: {len(valid)} mensagens")
+                        await send_json_msg({
+                            "type": "session_restored",
+                            "count": len(valid)
+                        })
+                    continue
+
                 if data["type"] == "vad_event" and data["event"] == "speech_end":
                     if processing:
                         continue

@@ -13,11 +13,8 @@ import subprocess
 import numpy as np
 import sounddevice as sd
 
-from core.config import (
-    WHISPER_MODEL_SIZE,
-    load_token,
-)
-from core.stt import _get_whisper
+from core.config import load_token
+from core.stt import transcribe_audio, init_stt
 from core.llm import ask_openclaw
 from core.tts import generate_tts, init_tts
 
@@ -116,17 +113,12 @@ def record_audio(mic_device):
 # ─── Transcription ────────────────────────────────────────────────────────────
 
 def transcribe(audio_path):
-    """Transcreve áudio com Faster-Whisper. VAD filter habilitado."""
+    """Transcreve áudio usando core/stt.py (mesmos parâmetros do WebSocket)."""
     try:
-        segments, info = _get_whisper().transcribe(
-            audio_path,
-            language="pt",
-            beam_size=5,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-        )
-        text = " ".join(seg.text for seg in segments).strip()
-        return text
+        import scipy.io.wavfile as wavfile
+        sr, audio_data = wavfile.read(audio_path)
+        text = transcribe_audio((sr, audio_data))
+        return text if text else ""
     except Exception as e:
         print(f"  ❌ Erro na transcrição: {e}")
         return ""
@@ -188,7 +180,7 @@ def main():
     init_tts()
 
     # Carregar Whisper
-    _get_whisper()
+    init_stt()
     print()
 
     # Histórico de conversa (mantém últimas 10 trocas)

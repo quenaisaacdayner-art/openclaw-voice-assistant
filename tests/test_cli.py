@@ -131,48 +131,29 @@ class TestLoadToken:
 
 class TestTranscribe:
     def test_returns_empty_string_on_error(self, fake_wav_file):
-        mock_model = MagicMock()
-        mock_model.transcribe.side_effect = Exception("model error")
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
+        with patch("voice_assistant_cli.transcribe_audio", side_effect=Exception("model error")):
             result = cli.transcribe(fake_wav_file)
             assert result == ""
 
-    def test_joins_segments(self, fake_wav_file):
-        seg1 = MagicMock()
-        seg1.text = "olá"
-        seg2 = MagicMock()
-        seg2.text = "mundo"
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg1, seg2], None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
+    def test_returns_transcribed_text(self, fake_wav_file):
+        with patch("voice_assistant_cli.transcribe_audio", return_value="olá mundo"):
             result = cli.transcribe(fake_wav_file)
             assert result == "olá mundo"
 
-    def test_strips_whitespace(self, fake_wav_file):
-        seg = MagicMock()
-        seg.text = "  texto com espaços  "
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([seg], None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
-            result = cli.transcribe(fake_wav_file)
-            assert result == "texto com espaços"
-
-    def test_empty_segments_returns_empty(self, fake_wav_file):
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([], None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
+    def test_returns_empty_on_none(self, fake_wav_file):
+        with patch("voice_assistant_cli.transcribe_audio", return_value=None):
             result = cli.transcribe(fake_wav_file)
             assert result == ""
 
-    def test_uses_vad_filter(self, fake_wav_file):
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([], None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
+    def test_delegates_to_core_stt(self, fake_wav_file):
+        """CLI transcribe() delegates to core.stt.transcribe_audio()."""
+        with patch("voice_assistant_cli.transcribe_audio", return_value="texto") as mock_ta:
             cli.transcribe(fake_wav_file)
-            call_kwargs = mock_model.transcribe.call_args
-            assert call_kwargs[1]["vad_filter"] is True
-            assert call_kwargs[1]["language"] == "pt"
-            assert call_kwargs[1]["beam_size"] == 5
+            mock_ta.assert_called_once()
+            # Receives (sample_rate, numpy_array) tuple
+            args = mock_ta.call_args[0][0]
+            assert isinstance(args, tuple)
+            assert len(args) == 2
 
 
 # ─── ask_openclaw ─────────────────────────────────────────────────────────────

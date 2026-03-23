@@ -214,22 +214,25 @@ class TestLoadTokenExtended:
 # ─── transcribe extended ────────────────────────────────────────────────────
 
 class TestTranscribeExtended:
-    def test_vad_parameters_min_silence(self, fake_wav_file):
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = ([], None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
-            cli.transcribe(fake_wav_file)
-            call_kwargs = mock_model.transcribe.call_args[1]
-            assert call_kwargs["vad_parameters"]["min_silence_duration_ms"] == 500
-
-    def test_multiple_segments_joined_with_space(self, fake_wav_file):
-        segs = []
-        for word in ["palavra1", "palavra2", "palavra3"]:
-            s = MagicMock()
-            s.text = word
-            segs.append(s)
-        mock_model = MagicMock()
-        mock_model.transcribe.return_value = (segs, None)
-        with patch("voice_assistant_cli._get_whisper", return_value=mock_model):
+    def test_delegates_to_core_transcribe_audio(self, fake_wav_file):
+        """CLI transcribe() now delegates to core.stt.transcribe_audio()."""
+        with patch("voice_assistant_cli.transcribe_audio", return_value="texto transcrito") as mock_ta:
             result = cli.transcribe(fake_wav_file)
-            assert result == "palavra1 palavra2 palavra3"
+            assert result == "texto transcrito"
+            mock_ta.assert_called_once()
+            # Verify it receives a (sample_rate, numpy_array) tuple
+            args = mock_ta.call_args[0][0]
+            assert isinstance(args, tuple)
+            assert len(args) == 2
+
+    def test_transcribe_returns_empty_on_none(self, fake_wav_file):
+        """If core transcribe_audio returns None, CLI returns empty string."""
+        with patch("voice_assistant_cli.transcribe_audio", return_value=None):
+            result = cli.transcribe(fake_wav_file)
+            assert result == ""
+
+    def test_transcribe_handles_exception(self, fake_wav_file):
+        """If transcribe_audio raises, CLI returns empty string."""
+        with patch("voice_assistant_cli.transcribe_audio", side_effect=Exception("boom")):
+            result = cli.transcribe(fake_wav_file)
+            assert result == ""
