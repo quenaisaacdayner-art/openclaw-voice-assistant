@@ -124,6 +124,11 @@ body {
     transition: width 0.05s;
 }
 .volume-bar.speaking { background: #f44336; }
+.volume-bar.muted {
+    background: #666 !important;
+    width: 100% !important;
+    opacity: 0.3;
+}
 
 .controls {
     display: flex;
@@ -266,6 +271,10 @@ let currentSource = null;
 let serverSpeaking = false;
 let pendingTextInput = false;
 
+// Thinking timer
+let thinkingTimer = null;
+let thinkingStartTime = 0;
+
 // UI
 const chat = document.getElementById('chat');
 const statusDot = document.getElementById('statusDot');
@@ -345,6 +354,7 @@ function handleStatus(status) {
 
     switch (status) {
         case 'listening':
+            if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
             setStatus('listening', 'Escutando');
             bottomStatus.textContent = 'Escutando...';
             textInput.disabled = false;
@@ -352,15 +362,23 @@ function handleStatus(status) {
             break;
         case 'thinking':
             setStatus('thinking', 'Pensando...');
-            bottomStatus.textContent = 'Pensando...';
+            thinkingStartTime = Date.now();
+            if (thinkingTimer) clearInterval(thinkingTimer);
+            thinkingTimer = setInterval(() => {
+                const elapsed = ((Date.now() - thinkingStartTime) / 1000).toFixed(1);
+                bottomStatus.textContent = `Pensando... ${elapsed}s`;
+            }, 100);
+            bottomStatus.textContent = 'Pensando... 0.0s';
             textInput.disabled = true;
             break;
         case 'speaking':
+            if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
             setStatus('speaking', 'Falando');
             bottomStatus.textContent = 'Falando...';
             textInput.disabled = true;
             break;
         default:
+            if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
             setStatus('connected', status);
     }
 }
@@ -454,12 +472,7 @@ function processAudioChunk(float32Array) {
     }
     const rms = Math.sqrt(sum / float32Array.length);
 
-    // Atualizar visualizacao
-    const pct = Math.min(rms / 0.1, 1) * 100;
-    volumeBar.style.width = pct + '%';
-    volumeBar.classList.toggle('speaking', isSpeechDetected);
-
-    // Barge-in: detectou fala durante playback
+    // Barge-in: detectou fala durante playback (funciona mesmo mutado)
     if (isPlaying && rms > VAD_THRESHOLD * 3) {
         stopPlayback();
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -467,8 +480,16 @@ function processAudioChunk(float32Array) {
         }
     }
 
-    // Nao enviar audio se mic mudo
-    if (isMuted) return;
+    // Se mutado: zerar barra e não processar VAD
+    if (isMuted) {
+        volumeBar.style.width = '0%';
+        return;
+    }
+
+    // Atualizar visualização (só quando não mutado)
+    const pct = Math.min(rms / 0.1, 1) * 100;
+    volumeBar.style.width = pct + '%';
+    volumeBar.classList.toggle('speaking', isSpeechDetected);
 
     if (rms > VAD_THRESHOLD) {
         if (!isSpeechDetected) {
@@ -574,7 +595,13 @@ function disconnect() {
     stopPlayback();
     playbackContext = null;
 
-    // 4. Reset estado
+    // 4. Limpar thinking timer
+    if (thinkingTimer) {
+        clearInterval(thinkingTimer);
+        thinkingTimer = null;
+    }
+
+    // 5. Reset estado
     started = false;
     isMuted = false;
     isSpeechDetected = false;
@@ -632,6 +659,10 @@ function toggleMute() {
     isMuted = !isMuted;
     micBtn.classList.toggle('active', isMuted);
     micBtn.textContent = isMuted ? '🔇' : '🎤';
+    volumeBar.classList.toggle('muted', isMuted);
+    if (isMuted) {
+        volumeBar.style.width = '0%';
+    }
 }
 </script>
 </body>
