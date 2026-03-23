@@ -198,9 +198,94 @@ body {
 }
 .error-toast.show { opacity: 1; }
 
+/* Orb */
+.orb-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 24px 0;
+    flex-shrink: 0;
+}
+
+.orb {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: box-shadow 0.3s, transform 0.3s;
+}
+
+.orb-inner {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #4a4a6a, #2d2d44);
+    transition: background 0.3s;
+}
+
+/* Orb states */
+.orb.disconnected {
+    box-shadow: 0 0 20px rgba(100, 100, 100, 0.3);
+}
+.orb.disconnected .orb-inner {
+    background: radial-gradient(circle at 35% 35%, #3a3a4a, #2d2d44);
+}
+
+.orb.connected,
+.orb.listening {
+    box-shadow: 0 0 20px rgba(76, 175, 80, 0.4);
+    animation: orb-breathe 3s ease-in-out infinite;
+}
+.orb.connected .orb-inner,
+.orb.listening .orb-inner {
+    background: radial-gradient(circle at 35% 35%, #4caf50, #2d6b30);
+}
+
+.orb.thinking {
+    box-shadow: 0 0 25px rgba(255, 152, 0, 0.5);
+    animation: orb-think 1.2s ease-in-out infinite;
+}
+.orb.thinking .orb-inner {
+    background: radial-gradient(circle at 35% 35%, #ff9800, #b36b00);
+}
+
+.orb.speaking {
+    box-shadow: 0 0 30px rgba(33, 150, 243, 0.5);
+    animation: orb-speak 0.8s ease-in-out infinite;
+}
+.orb.speaking .orb-inner {
+    background: radial-gradient(circle at 35% 35%, #2196f3, #1565c0);
+}
+
+@keyframes orb-breathe {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(76, 175, 80, 0.3); }
+    50% { transform: scale(1.05); box-shadow: 0 0 35px rgba(76, 175, 80, 0.5); }
+}
+
+@keyframes orb-think {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 25px rgba(255, 152, 0, 0.4); }
+    50% { transform: scale(1.08); box-shadow: 0 0 40px rgba(255, 152, 0, 0.7); }
+}
+
+@keyframes orb-speak {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 30px rgba(33, 150, 243, 0.4); }
+    50% { transform: scale(1.1); box-shadow: 0 0 45px rgba(33, 150, 243, 0.7); }
+}
+
+/* Orb volume reaction */
+.orb.listening.vol-low { transform: scale(1.02); }
+.orb.listening.vol-mid { transform: scale(1.08); }
+.orb.listening.vol-high { transform: scale(1.15); box-shadow: 0 0 50px rgba(76, 175, 80, 0.7); }
+
 @media (max-width: 600px) {
     .message { max-width: 90%; }
     .status-bar h1 { font-size: 0.95rem; }
+    .orb { width: 60px; height: 60px; }
+    .orb-inner { width: 45px; height: 45px; }
+    .orb-container { padding: 16px 0; }
 }
 </style>
 </head>
@@ -211,6 +296,12 @@ body {
     <div class="status-indicator">
         <div class="status-dot disconnected" id="statusDot"></div>
         <span id="statusText">Desconectado</span>
+    </div>
+</div>
+
+<div class="orb-container" id="orbContainer" style="display:none">
+    <div class="orb" id="orb">
+        <div class="orb-inner"></div>
     </div>
 </div>
 
@@ -299,6 +390,8 @@ async function start() {
     startBtn.style.display = 'none';
     document.getElementById('disconnectBtn').style.display = '';
 
+    document.getElementById('orbContainer').style.display = 'flex';
+
     await startMic();
     connect();
 }
@@ -386,6 +479,10 @@ function handleStatus(status) {
 function setStatus(cls, text) {
     statusDot.className = 'status-dot ' + cls;
     statusText.textContent = text;
+    const orb = document.getElementById('orb');
+    if (orb) {
+        orb.className = 'orb ' + cls;
+    }
 }
 
 // ─── Chat UI ─────────────────────────────────────────
@@ -480,14 +577,24 @@ function processAudioChunk(float32Array) {
         }
     }
 
-    // Se mutado: zerar barra e não processar VAD
-    if (isMuted) {
-        volumeBar.style.width = '0%';
-        return;
+    // Atualizar volume pct (antes do mute check pra usar no orb)
+    const pct = Math.min(rms / 0.1, 1) * 100;
+
+    // Atualizar esfera com volume (só no estado listening e não mutado)
+    const orb = document.getElementById('orb');
+    if (orb && orb.classList.contains('listening') && !isMuted) {
+        orb.classList.remove('vol-low', 'vol-mid', 'vol-high');
+        if (pct > 60) orb.classList.add('vol-high');
+        else if (pct > 25) orb.classList.add('vol-mid');
+        else if (pct > 5) orb.classList.add('vol-low');
     }
 
-    // Atualizar visualização (só quando não mutado)
-    const pct = Math.min(rms / 0.1, 1) * 100;
+    // Se mutado: zerar barra, limpar orb volume e não processar VAD
+    if (isMuted) {
+        volumeBar.style.width = '0%';
+        if (orb) orb.classList.remove('vol-low', 'vol-mid', 'vol-high');
+        return;
+    }
     volumeBar.style.width = pct + '%';
     volumeBar.classList.toggle('speaking', isSpeechDetected);
 
@@ -618,7 +725,8 @@ function disconnect() {
     volumeBar.style.width = '0%';
     setStatus('disconnected', 'Desconectado');
 
-    // 6. Esconder botão Encerrar, Interrupt e text input, mostrar Iniciar
+    // 6. Esconder orb, botão Encerrar, Interrupt e text input, mostrar Iniciar
+    document.getElementById('orbContainer').style.display = 'none';
     document.getElementById('disconnectBtn').style.display = 'none';
     document.getElementById('interruptBtn').style.display = 'none';
     document.getElementById('textInputBar').style.display = 'none';
