@@ -163,8 +163,8 @@ tests/                   ─── ~111 testes automatizados
 - [x] **S4:** Transporte — Backoff exponencial, Keep-alive ping/pong, Session persistence
 - [x] **S5:** Robustez — Markdown strip TTS, Timeout LLM 120s, Race protection, Cleanup disconnect, Aviso sessão longa
 - [x] **S6:** Deploy — Setup Windows, CI GitHub Actions, Docs atualizados
-- [ ] **S7:** Segurança — HTTPS/WSS, Auth da interface
-- [ ] **S8:** Conversação — Contexto longo, Persona, Memória
+- [x] **S7:** Segurança — Auth por token, XSS fix, Rate limit, Buffer limit, Input validation, Erros genéricos, marked.js local
+- [x] **S8:** Conversação — Timestamps nas mensagens, Export conversa (.json)
 
 ## Contribuindo
 
