@@ -1,152 +1,132 @@
 # CLAUDE.md — Contexto para Claude Code
 
+> Este é o único arquivo de contexto que você precisa ler.
+> Última atualização: 2026-03-23 (S1-S8 completos)
+
 ## O que é este projeto
 
-Interface de conversação **Speech-to-Speech (S2S)** de baixa latência conectada ao OpenClaw Gateway. O objetivo é minimizar o tempo entre o fim da fala do usuário e o início do áudio de resposta (Time-to-First-Audio).
+Voice assistant **Speech-to-Speech (S2S)** conectado ao OpenClaw Gateway. O usuário fala → VAD detecta silêncio → Whisper transcreve → OpenClaw responde em streaming → TTS gera áudio por frase → usuário ouve.
 
 **Pipeline:**
 ```
-VOZ → VAD → STT (Whisper) → LLM streaming (OpenClaw) → TTS streaming → VOZ
+VOZ → VAD (RMS) → STT (Whisper) → LLM streaming (OpenClaw SSE) → TTS → VOZ
 ```
-
-**Repo:** https://github.com/quenaisaacdayner-art/openclaw-voice-assistant
-**Local:** `C:\Users\quena\projects\openclaw-voice-assistant`
-
-## Objetivo e Roadmap
-
-### Objetivo final
-S2S com TTFA (Time-to-First-Audio) < 5 segundos. O OpenClaw é o cérebro — o LLM que processa e responde. O voice app é a interface que conecta voz humana ao OpenClaw.
-
-### Fases
-- **Fase 1 (concluída):** Otimização de latência — modelo rápido (Sonnet 4.6), Whisper tiny, split agressivo de texto
-- **Fase 2 (concluída):** WebSocket + Web Audio API — S2S real com streaming bidirecional de áudio
-- **Fase 3 (concluída):** Barge-in, TTS pipeline, testes, polish
-
-### Estado atual
-WebSocket S2S funcional com barge-in. ~3-6s do fim da fala até início da resposta em áudio (Sonnet 4.6 + Whisper tiny).
-
-## 3 Cenários de Deploy
-
-O código suporta 3 cenários. A diferença é infra (tunnels, onde rodar), NÃO código — o voice app sempre fala com `OPENCLAW_GATEWAY_URL` (default: `http://127.0.0.1:18789/v1/chat/completions`).
-
-```
-CENÁRIO 1: TUDO LOCAL (laptop com OpenClaw)
-  Browser ↔ Voice App ↔ OpenClaw Gateway (tudo localhost)
-
-CENÁRIO 2: TUDO VPS (voice app + OpenClaw na VPS)
-  Browser ─(SSH tunnel :7860)─ Voice App ↔ OpenClaw Gateway (tudo na VPS)
-
-CENÁRIO 3: APP LOCAL → OPENCLAW VPS
-  Browser ↔ Voice App (local) ─(SSH tunnel :18789)─ OpenClaw Gateway (VPS)
-```
-
-Scripts de conexão em `scripts/run_local.sh`, `run_vps.sh`, `run_local_remote_gateway.sh` (+ versões .ps1 pra Windows).
 
 ## Arquitetura do código
 
 ```
-core/                    — Módulos compartilhados (fonte única de verdade)
-  config.py              — Configuração central (env vars, constantes)
-  history.py             — Gerenciamento de histórico de chat
-  llm.py                 — Cliente OpenClaw API (streaming SSE + sync)
-  stt.py                 — Whisper STT wrapper (lazy loading thread-safe)
-  tts.py                 — Multi-engine TTS (kokoro → piper → edge fallback)
+server_ws.py             ─ Servidor WebSocket S2S (FastAPI + uvicorn) — PRINCIPAL
+static/index.html        ─ Frontend completo (HTML + CSS + JS inline, 39KB)
+static/marked.min.js     ─ marked v15 (local, não CDN)
+voice_assistant_cli.py   ─ CLI terminal (alternativa ao browser)
 
-server_ws.py             — Servidor WebSocket S2S (FastAPI + uvicorn) — PRINCIPAL
-static/index.html        — Frontend Web Audio API (HTML + CSS + JS inline)
+core/
+  config.py              ─ Env vars + constantes + load_token()
+  history.py             ─ Chat history (MAX_HISTORY = 20 exchanges)
+  llm.py                 ─ Cliente OpenClaw (streaming SSE + sync)
+  stt.py                 ─ Whisper STT (lazy loading, thread-safe, model swap runtime)
+  tts.py                 ─ TTS multi-engine (kokoro → piper → edge) + _strip_markdown()
 
-voice_assistant_app.py   — App Gradio unificado (auto-detecta LOCAL vs BROWSER) — fallback
-voice_assistant_cli.py   — CLI terminal
-
-tests/                   — ~233 testes (pytest)
-auditoria/               — Logs de auditoria das fases de upgrade
-prompts/                 — Prompts auto-contidos pra cada fase
-scripts/                 — Scripts de conexão (3 cenários × sh + ps1)
-models/                  — Modelos TTS locais (download automático)
+scripts/                 ─ Scripts de execução (3 cenários × sh + ps1)
+tests/                   ─ 111 testes (pytest)
+docs/SECURITY.md         ─ Modelo de autenticação
+arquivo/                 ─ Histórico (auditorias, prompts executados, testes antigos)
 ```
 
-## Stack
+## Features implementadas (S1-S8)
 
-| Componente | Ferramenta | Nota |
-|-----------|-----------|------|
-| **VAD (local)** | RealtimeSTT (Silero VAD + PyAudio) | Detecta fala/silêncio automaticamente |
-| **VAD (browser)** | BrowserContinuousListener (RMS energy) | Streaming chunks do browser |
-| **STT** | faster-whisper (default: `tiny`, ~75MB, CPU) | `WHISPER_MODEL=small` pra melhor precisão |
-| **LLM** | OpenClaw Gateway (default: `anthropic/claude-sonnet-4-6`) | Streaming SSE |
-| **TTS** | Kokoro → Piper → Edge TTS (fallback chain) | Edge = online, rápido; Kokoro/Piper = local |
-| **UI** | Gradio 6.9 (dark mode, mobile) | Fase 2 migra pra WebSocket |
-
-## ⚠️ GESTÃO DE PROCESSOS — OBRIGATÓRIO
-
-**Cada `python app.py` que não é parado com Ctrl+C fica como processo zumbi. Processos acumulados já travaram o WSL inteiro (19/03).**
-
-### Regras INEGOCIÁVEIS:
-
-1. **ANTES de rodar qualquer teste ou server:**
-   ```bash
-   lsof -ti:7860 | xargs kill -9 2>/dev/null
-   ```
-
-2. **Pra parar um servidor:** Ctrl+C (NUNCA fechar a aba)
-
-3. **Limpeza se suspeitar de acumulação:**
-   ```bash
-   ps aux | grep python
-   killall python3
-   ```
-
-4. **Antes de pytest:** matar server primeiro
-   ```bash
-   lsof -ti:7860 | xargs kill -9 2>/dev/null
-   python -m pytest tests/ -v
-   ```
-
-5. **Nunca deixar processos python em background sem propósito.**
-
-## Partes frágeis (entender antes de mexer)
-
-1. **`ask_openclaw_stream` (core/llm.py)** — parser SSE (delta.content, [DONE]). Quebra silenciosamente se formato mudar.
-2. **`gr.skip()` no app** — race condition Gradio. Sem `gr.skip()`, Timer sobrescreve outputs de outros handlers. OBRIGATÓRIO em retornos sem mudança.
-3. **`load_token` (core/config.py)** — lê de `~/.openclaw/openclaw.json`. Estrutura: `gateway.auth.token`.
-4. **`generate_tts` (core/tts.py)** — Edge TTS roda em ThreadPoolExecutor separado porque Gradio 6.x já tem event loop. `asyncio.run()` direto crasharia.
-5. **`_detect_mode()` (app)** — Thread com timeout 15s pra importar RealtimeSTT. Startup lento mas funciona.
-6. **`ContinuousListener` (modo LOCAL)** — RealtimeSTT com Silero VAD em thread daemon.
-7. **`BrowserContinuousListener` (modo BROWSER)** — VAD manual por RMS. `audio_input.stream()` → `feed_chunk()`.
-8. **Barge-in (server_ws.py)** — cancel_event + asyncio.create_task. Se a task não checa cancel_event frequentemente, pode demorar a parar.
-9. **Audio playback queue (index.html)** — playNext() encadeia via onended. Se decodeAudioData falhar num chunk, a fila trava. Precisa de try/catch.
-10. **Downsample (index.html)** — Nearest-neighbor simples. Pode ter aliasing em áudio com frequências altas. Aceitável pra voz.
+| Área | Features |
+|------|----------|
+| **Interface** | Disconnect, Interrupt manual, Input de texto, Timer "Pensando", Esfera pulsante (CSS), Markdown (marked.js), Config panel |
+| **Áudio** | Whisper small/tiny configurável, Seletor de vozes TTS, Velocidade TTS |
+| **Latência** | Keep-alive HTTP (Session), Split agressivo de frases, VAD otimizado, Métricas TTFA no console |
+| **Transporte** | Backoff exponencial (3→6→12→30s), Ping/pong keep-alive (25s), Session persistence (localStorage + restore) |
+| **Robustez** | Markdown strip no TTS, Timeout LLM 120s, Race protection (processing flag), Cleanup no disconnect, Aviso sessão longa (30 msgs) |
+| **Deploy** | setup.ps1 (Windows), setup.sh (Linux/Mac), CI GitHub Actions, .env.example |
+| **Segurança** | Auth por token (.ova_token, só se SERVER_HOST ≠ localhost), XSS fix (marked renderer), Rate limit (2s texto, 1s speech), Buffer limit (10MB), Input validation (2000 chars), Erros genéricos (sem stack pro client) |
+| **Conversação** | Timestamps (ISO + visual HH:MM), Export JSON (botão no config panel) |
 
 ## Variáveis de ambiente
-
-Definidas em `.env` (ver `.env.example`):
 
 | Variável | Default | Descrição |
 |----------|---------|-----------|
 | `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789/v1/chat/completions` | Endpoint do gateway |
 | `OPENCLAW_GATEWAY_TOKEN` | (auto de `~/.openclaw/openclaw.json`) | Override do token |
-| `OPENCLAW_MODEL` | `anthropic/claude-sonnet-4-6` | Modelo LLM (Sonnet = rápido pra voz) |
-| `WHISPER_MODEL` | `tiny` | STT: `tiny` (~1-2s) / `small` (~3-5s) |
+| `OPENCLAW_MODEL` | `anthropic/claude-sonnet-4-6` | Modelo LLM |
+| `WHISPER_MODEL` | `tiny` | `tiny` (~1-2s) / `small` (~3-5s, mais preciso) |
 | `TTS_ENGINE` | `edge` | `edge` (online) / `piper` (local) / `kokoro` (local, melhor) |
 | `TTS_VOICE` | `pt-BR-AntonioNeural` | Voz Edge TTS |
-| `SERVER_HOST` | `127.0.0.1` | `0.0.0.0` pra acesso remoto |
+| `SERVER_HOST` | `127.0.0.1` | `0.0.0.0` pra acesso remoto (ativa auth) |
 | `PORT` | `7860` | Porta do servidor |
-| `APP_MODE` | `websocket` | `websocket` (S2S) / `gradio` (fallback Gradio) |
+
+Token carregado automaticamente de `~/.openclaw/openclaw.json` (`gateway.auth.token`).
+
+## 3 Cenários de Deploy
+
+A diferença é infra (tunnels), NÃO código.
+
+```
+CENÁRIO 1: TUDO LOCAL      → Browser ↔ Voice App ↔ OpenClaw (tudo localhost)
+CENÁRIO 2: TUDO VPS        → Browser ─(SSH :7860)─ Voice App ↔ OpenClaw (VPS)
+CENÁRIO 3: LOCAL → VPS     → Browser ↔ Voice App (local) ─(SSH :18789)─ OpenClaw (VPS)
+```
+
+## Dependências entre arquivos
+
+```
+server_ws.py
+  ├── core/config.py      (GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE, load_token)
+  ├── core/stt.py          (transcribe_audio, init_stt, get_current_model, set_whisper_model)
+  ├── core/tts.py          (generate_tts, init_tts, _strip_markdown, set_tts_speed, get_tts_speed, list_edge_voices)
+  ├── core/llm.py          (ask_openclaw_stream, ask_openclaw, _find_sentence_end, _session)
+  ├── core/history.py      (build_api_history, MAX_HISTORY)
+  └── static/index.html    (servido como FileResponse)
+
+static/index.html
+  └── static/marked.min.js (marked v15 — carregado via <script>)
+
+voice_assistant_cli.py
+  ├── core/config.py
+  ├── core/stt.py
+  ├── core/tts.py
+  └── core/llm.py
+
+core/config.py            ─ Sem dependências internas (só os, json)
+core/history.py           ─ Sem dependências internas
+core/llm.py               ─ core/config.py (GATEWAY_URL, MODEL, load_token)
+core/stt.py               ─ core/config.py (WHISPER_MODEL_SIZE)
+core/tts.py               ─ Sem dependências internas (só libs externas)
+```
+
+## Partes frágeis (entender antes de mexer)
+
+1. **`ask_openclaw_stream` (core/llm.py)** — Parser SSE manual (delta.content, [DONE]). Quebra se formato mudar.
+2. **`_find_sentence_end` (core/llm.py)** — Detecta fim de frase pra split TTS. NÃO detecta `\n` ainda — última frase sem pontuação pode atrasar TTS.
+3. **`load_token` (core/config.py)** — Lê `~/.openclaw/openclaw.json`. Estrutura: `gateway.auth.token`.
+4. **`generate_tts` (core/tts.py)** — Edge TTS roda em ThreadPoolExecutor (event loop do FastAPI). `asyncio.run()` direto crasharia.
+5. **`_strip_markdown` (core/tts.py)** — Regex chain pra limpar markdown antes do TTS. Ordem dos regex importa (bold+italic antes de bold antes de italic).
+6. **Barge-in (server_ws.py)** — `cancel_event` + `asyncio.create_task`. Task precisa checar `cancel_event` frequentemente.
+7. **Audio playback queue (index.html)** — `playNext()` encadeia via `onended`. Se `decodeAudioData` falhar, fila trava — tem try/catch (S5 fix).
+8. **Session persistence (index.html)** — `chatMessages[]` no localStorage. Frontend envia `restore_history` ao reconectar. Server valida e aceita até 20 msgs × 5000 chars.
+9. **Auth (server_ws.py)** — Token em `.ova_token`. Só ativo se `SERVER_HOST ≠ localhost`. WebSocket fecha com 4003 se token errado.
+10. **Rate limit (server_ws.py)** — `_last_text_time` (2s cooldown) e `_last_speech_time` (1s cooldown). Per-connection, não global.
+
+## ⚠️ Gestão de processos
+
+```powershell
+# Windows — antes de rodar server ou testes:
+Get-Process -Name python* -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# Testes:
+python -m pytest tests/ -v
+```
+
+**NUNCA deixar processos python em background.** Cada `python server_ws.py` que não é parado fica como zumbi.
 
 ## Convenções
 
 - Python 3.10+ (roda em 3.13 localmente)
 - Português nos comentários e UI
-- Testes com pytest + unittest.mock
-- Sem type hints (manter)
+- Testes com pytest + unittest.mock (111 testes)
+- Sem type hints
 - Imports: stdlib → third-party → locais
-- `gr.skip()` obrigatório pra retornos sem mudança em streaming handlers
-- `gr.Audio` NÃO suporta streaming progressivo de output (limitação Gradio)
-
-## Testes
-
-```bash
-lsof -ti:7860 | xargs kill -9 2>/dev/null
-python -m pytest tests/ -v
-```
-
-~240+ testes (pytest). Inclui testes de estrutura do frontend e conversão PCM→WAV. Skips por `_detect_mode` timeout — threading não-determinístico.
