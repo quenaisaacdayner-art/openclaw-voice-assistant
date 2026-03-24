@@ -96,6 +96,14 @@ body {
     color: #888;
     margin-bottom: 4px;
 }
+.message-time {
+    font-size: 0.65rem;
+    color: #666;
+    margin-top: 2px;
+    text-align: right;
+}
+.user .message-time { text-align: right; }
+.assistant .message-time { text-align: left; }
 
 /* Bottom bar */
 .bottom-bar {
@@ -455,6 +463,12 @@ body {
     </div>
 
     <button class="btn" onclick="saveConfig()">Salvar configurações</button>
+
+    <div class="config-group">
+        <label>Conversa</label>
+        <button class="btn" onclick="exportConversation()" id="exportBtn" style="width:100%;padding:8px;font-size:0.85rem;">💾 Salvar conversa (.json)</button>
+        <small>Exporta todas as mensagens da sessão atual com timestamps.</small>
+    </div>
 </div>
 
 <div class="orb-container" id="orbContainer" style="display:none">
@@ -776,7 +790,7 @@ function connect() {
                 case 'transcript':
                     if (!pendingTextInput) addUserMessage(data.text);
                     if (data.text && data.text.trim()) {
-                        chatMessages.push({ role: 'user', content: data.text.trim() });
+                        chatMessages.push({ role: 'user', content: data.text.trim(), timestamp: new Date().toISOString() });
                         trimChatMessages();
                         checkSessionLength();
                     }
@@ -784,7 +798,7 @@ function connect() {
                 case 'text':
                     updateAssistantMessage(data.text, data.done);
                     if (data.done && data.text) {
-                        chatMessages.push({ role: 'assistant', content: data.text });
+                        chatMessages.push({ role: 'assistant', content: data.text, timestamp: new Date().toISOString() });
                         trimChatMessages();
                         checkSessionLength();
                     }
@@ -850,6 +864,10 @@ function addUserMessage(text) {
     const el = document.createElement('div');
     el.className = 'message user';
     el.innerHTML = `<div class="label">Voce</div>${escapeHtml(text)}`;
+    const timeEl = document.createElement('div');
+    timeEl.className = 'message-time';
+    timeEl.textContent = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    el.appendChild(timeEl);
     chat.appendChild(el);
     scrollChat();
     currentAssistantEl = null;
@@ -870,6 +888,10 @@ function updateAssistantMessage(text, done) {
     }
     scrollChat();
     if (done) {
+        const timeEl = document.createElement('div');
+        timeEl.className = 'message-time';
+        timeEl.textContent = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        currentAssistantEl.appendChild(timeEl);
         currentAssistantEl = null;
     }
 }
@@ -1216,6 +1238,39 @@ document.getElementById('cfgSpeed').addEventListener('change', (e) => {
         ws.send(JSON.stringify({type: 'config', tts_speed: parseFloat(e.target.value)}));
     }
 });
+
+// ─── Export Conversation ─────────────────────────────
+function exportConversation() {
+    if (chatMessages.length === 0) {
+        showError('Nenhuma mensagem pra exportar.');
+        return;
+    }
+
+    const exportData = {
+        exported_at: new Date().toISOString(),
+        message_count: chatMessages.length,
+        messages: chatMessages.map(m => ({
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp || null
+        }))
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
+    a.download = `ova_conversa_${dateStr}_${timeStr}.json`;
+
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
 
 loadConfig();
 </script>
