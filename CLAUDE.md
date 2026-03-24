@@ -1,7 +1,7 @@
 # CLAUDE.md — Contexto para Claude Code
 
 > Este é o único arquivo de contexto que você precisa ler.
-> Última atualização: 2026-03-23 (S1-S8 completos)
+> Última atualização: 2026-03-24 (S1-S9 completos)
 
 ## O que é este projeto
 
@@ -15,12 +15,17 @@ VOZ → VAD (RMS) → STT (Whisper) → LLM streaming (OpenClaw SSE) → TTS →
 ## Arquitetura do código
 
 ```
+run.sh                   ─ Script "faz tudo" Linux/Mac (setup + server + browser)
+run.ps1                  ─ Script "faz tudo" Windows PowerShell
 server_ws.py             ─ Servidor WebSocket S2S (FastAPI + uvicorn) — PRINCIPAL
 static/index.html        ─ Frontend completo (HTML + CSS + JS inline, 39KB)
 static/marked.min.js     ─ marked v15 (local, não CDN)
 voice_assistant_cli.py   ─ CLI terminal (alternativa ao browser)
+pyproject.toml           ─ Configuração do pacote Python (pip install, entry point `ova`)
 
 core/
+  __init__.py            ─ Marca core/ como pacote Python
+  __main__.py            ─ Entry point do comando `ova` (argparse + banner + uvicorn)
   config.py              ─ Env vars + constantes + load_token()
   history.py             ─ Chat history (MAX_HISTORY = 20 exchanges)
   llm.py                 ─ Cliente OpenClaw (streaming SSE + sync)
@@ -45,6 +50,7 @@ arquivo/                 ─ Histórico (auditorias, prompts executados, testes 
 | **Deploy** | setup.ps1 (Windows), setup.sh (Linux/Mac), CI GitHub Actions, .env.example |
 | **Segurança** | Auth por token (.ova_token, só se SERVER_HOST ≠ localhost), XSS fix (marked renderer), Rate limit (2s texto, 1s speech), Buffer limit (10MB), Input validation (2000 chars), Erros genéricos (sem stack pro client) |
 | **Conversação** | Timestamps (ISO + visual HH:MM), Export JSON (botão no config panel) |
+| **Execução** | `run.sh`/`run.ps1` (1 comando faz tudo), `pyproject.toml`, comando `ova` via pip, `--help`, `--version` |
 
 ## Variáveis de ambiente
 
@@ -110,6 +116,7 @@ core/tts.py               ─ Sem dependências internas (só libs externas)
 8. **Session persistence (index.html)** — `chatMessages[]` no localStorage. Frontend envia `restore_history` ao reconectar. Server valida e aceita até 20 msgs × 5000 chars.
 9. **Auth (server_ws.py)** — Token em `.ova_token`. Só ativo se `SERVER_HOST ≠ localhost`. WebSocket fecha com 4003 se token errado.
 10. **Rate limit (server_ws.py)** — `_last_text_time` (2s cooldown) e `_last_speech_time` (1s cooldown). Per-connection, não global.
+11. **Entry point `ova` (core/__main__.py)** — Seta env vars ANTES de importar core/config.py. Usa `importlib.import_module` pra importar `server_ws` (está na raiz, não em core/). `sys.path.insert(0, project_root)` resolve o import.
 
 ## ⚠️ Gestão de processos
 

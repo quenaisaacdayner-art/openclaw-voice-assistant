@@ -25,78 +25,81 @@ O **OpenClaw** é o cérebro — seu agente com memória, skills e contexto. Est
 - **CLI** — Modo terminal pra quem prefere
 - **Mobile-friendly** — Layout responsivo, dark mode
 
-## Instalação
+## Início rápido
 
 ```bash
 git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
 cd openclaw-voice-assistant
-bash setup.sh
+bash run.sh
 ```
 
-`setup.sh` faz tudo: detecta o OS, instala Python se necessário (Ubuntu/Debian/Fedora/macOS), cria virtualenv, instala dependências. Funciona em VPS limpa.
+Pronto. O script detecta se é a primeira vez, instala tudo automaticamente, sobe o server e abre o browser. Um comando.
 
 **Windows (PowerShell):**
 
 ```powershell
 git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
 cd openclaw-voice-assistant
-.\setup.ps1
+.\run.ps1
 ```
 
-Para TTS local (Kokoro/Piper) e mic direto no server:
+**Via pip (alternativa):**
 
 ```bash
-source venv/bin/activate
-pip install -r requirements-local.txt
+pip install openclaw-voice-assistant
+ova
 ```
 
-**Requisitos:** OpenClaw Gateway rodando com `chatCompletions` habilitado. Python 3.10+ (instalado automaticamente pelo `setup.sh` em distros suportadas).
+**Requisitos:** [OpenClaw](https://github.com/openclaw/openclaw) Gateway rodando. Python 3.10+ (instalado automaticamente pelo script em Ubuntu/Debian/Fedora/macOS).
 
 ## 3 Cenários de uso
+
+A diferença entre cenários é **pra onde apontar**, não o código. O mesmo comando funciona pra todos.
 
 ### Cenário 1: Tudo local (laptop com OpenClaw)
 
 ```bash
-# Linux/Mac
-bash scripts/run_local.sh
-
-# Windows PowerShell
-.\scripts\run_local.ps1
+bash run.sh          # Linux/Mac
+.\run.ps1            # Windows
+ova                  # via pip
 ```
 
-Voice app + OpenClaw no mesmo computador. Mais simples.
+Voice app + OpenClaw no mesmo computador. Mais simples — defaults funcionam.
 
 ### Cenário 2: Tudo na VPS
 
 ```bash
 # Na VPS:
-bash scripts/run_vps.sh
+bash run.sh --host 0.0.0.0
 
-# No seu PC (SSH tunnel):
+# No seu PC (SSH tunnel pra acessar pelo browser):
 ssh -N -L 7860:127.0.0.1:7860 root@<VPS_IP>
 
 # Abra: http://127.0.0.1:7860
 ```
 
-Voice app + OpenClaw na VPS. Acessa pelo browser via tunnel.
-
 ### Cenário 3: App local → OpenClaw na VPS
 
 ```bash
-# Primeiro, tunnel pro gateway:
+# Primeiro, tunnel pro gateway da VPS:
 ssh -N -L 18789:127.0.0.1:18789 root@<VPS_IP>
 
-# Depois:
-bash scripts/run_local_remote_gateway.sh
+# Depois, rodar normalmente (o tunnel faz o gateway parecer local):
+bash run.sh
 ```
 
-Voice app roda no seu laptop, mas usa o OpenClaw da VPS como cérebro.
-
-### Modo rápido (sem scripts)
+### Opções avançadas
 
 ```bash
-python voice_assistant_app.py      # Web/Gradio (auto-detecta modo)
-python voice_assistant_cli.py      # Terminal
+bash run.sh --host 0.0.0.0 --port 8080 --model anthropic/claude-sonnet-4-6 --whisper small
+ova --host 0.0.0.0 --gateway-url http://minha-vps:18789/v1/chat/completions --no-browser
+ova --help        # ver todas as opções
+```
+
+### CLI (terminal, sem browser)
+
+```bash
+python voice_assistant_cli.py
 ```
 
 ## Configuração
@@ -129,14 +132,15 @@ Token carregado automaticamente de `~/.openclaw/openclaw.json`.
 ~3-6s do fim da fala até início da resposta em áudio (com Sonnet 4.6 + Whisper tiny).
 
 ```
+run.sh / run.ps1         ─── "Faz tudo" — setup + server + browser (1 comando)
 server_ws.py             ─── Servidor WebSocket S2S (principal)
 static/index.html        ─── Frontend Web Audio API + orbe visual
-voice_assistant_app.py   ─── Fallback Gradio (legado)
 voice_assistant_cli.py   ─── CLI terminal
-core/                    ─── Módulos compartilhados (STT, TTS, LLM, config, history)
-setup.sh / setup.ps1     ─── Setup automático (Linux/Mac / Windows)
-scripts/                 ─── Scripts de execução (3 cenários)
-tests/                   ─── ~111 testes automatizados
+core/                    ─── Módulos compartilhados (STT, TTS, LLM, config, entry point `ova`)
+setup.sh / setup.ps1     ─── Setup isolado (só instala, não roda)
+scripts/                 ─── Scripts avançados (3 cenários separados)
+tests/                   ─── 118 testes automatizados
+pyproject.toml           ─── Configuração do pacote (pip install)
 ```
 
 ## Stack
@@ -147,7 +151,7 @@ tests/                   ─── ~111 testes automatizados
 | **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Grátis (CPU) |
 | **LLM** | [OpenClaw](https://github.com/openclaw/openclaw) Gateway | Seu plano |
 | **TTS** | [Kokoro](https://github.com/hexgrad/kokoro) / [Piper](https://github.com/rhasspy/piper) / [Edge TTS](https://github.com/rany2/edge-tts) | Grátis |
-| **UI** | [Gradio 6.x](https://gradio.app/) | Grátis |
+| **UI** | HTML + CSS + JS (WebSocket nativo) | Grátis |
 
 ## Roadmap
 
@@ -165,6 +169,7 @@ tests/                   ─── ~111 testes automatizados
 - [x] **S6:** Deploy — Setup Windows, CI GitHub Actions, Docs atualizados
 - [x] **S7:** Segurança — Auth por token, XSS fix, Rate limit, Buffer limit, Input validation, Erros genéricos, marked.js local
 - [x] **S8:** Conversação — Timestamps nas mensagens, Export conversa (.json)
+- [x] **S9:** Simplificação — `run.sh`/`run.ps1` (1 comando), `pyproject.toml`, comando `ova` via pip
 
 ## Contribuindo
 
