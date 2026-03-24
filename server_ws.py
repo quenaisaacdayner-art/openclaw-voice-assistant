@@ -7,11 +7,13 @@ import json
 import time
 import asyncio
 import traceback
+import secrets
+from urllib.parse import parse_qs
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from core.config import load_token, GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE
 from core.stt import transcribe_audio, init_stt, get_current_model
@@ -22,6 +24,31 @@ from core.llm import ask_openclaw_stream, ask_openclaw, _find_sentence_end, _ses
 from core.history import build_api_history, MAX_HISTORY
 
 LLM_TIMEOUT = 120  # segundos sem resposta do LLM antes de cancelar
+AUDIO_BUFFER_MAX = 10 * 1024 * 1024  # 10MB (~5 min de áudio 16kHz 16-bit mono)
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ova_token")
+
+def _is_loopback(host: str) -> bool:
+    """Verifica se o host é loopback (não precisa de auth)."""
+    return host in ("127.0.0.1", "localhost", "::1", "")
+
+def _load_or_create_token() -> str:
+    """Carrega token existente ou gera um novo."""
+    if os.path.exists(_TOKEN_FILE):
+        with open(_TOKEN_FILE, "r") as f:
+            token = f.read().strip()
+            if token:
+                return token
+    token = secrets.token_urlsafe(32)
+    with open(_TOKEN_FILE, "w") as f:
+        f.write(token)
+    return token
+
+_server_host = os.environ.get("SERVER_HOST", "127.0.0.1")
+_auth_required = not _is_loopback(_server_host)
+_auth_token = _load_or_create_token() if _auth_required else None
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -68,12 +95,29 @@ async def _tts_to_bytes(text, loop):
 
 
 @app.get("/")
-async def index():
+async def index(request: Request):
+    if _auth_required:
+        token = request.query_params.get("token")
+        if token != _auth_token:
+            return Response(
+                content="<h1>🔒 Acesso negado</h1><p>Use a URL completa com token (printada no terminal).</p>",
+                media_type="text/html",
+                status_code=403
+            )
     return FileResponse("static/index.html")
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # Auth check (só exigido em não-localhost)
+    if _auth_required:
+        raw_qs = ws.scope.get("query_string", b"").decode()
+        params = parse_qs(raw_qs)
+        client_token = params.get("token", [None])[0]
+        if client_token != _auth_token:
+            await ws.close(code=4003, reason="Token inválido ou ausente")
+            return
+
     await ws.accept()
 
     # Enviar info do servidor ao conectar
@@ -93,6 +137,12 @@ async def websocket_endpoint(ws: WebSocket):
     cancel_event = asyncio.Event()
     processing_lock = asyncio.Lock()
     pending_audio = bytearray()  # áudio que chegou durante processamento
+
+    # Rate limiting
+    _last_text_time = 0.0
+    _TEXT_COOLDOWN = 2.0  # segundos entre mensagens de texto
+    _last_speech_time = 0.0
+    _SPEECH_COOLDOWN = 1.0  # segundos entre speech_end
 
     async def send_json_msg(data):
         try:
@@ -299,11 +349,11 @@ async def websocket_endpoint(ws: WebSocket):
                         perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
                     await send_json_msg(perf_msg)
 
-            except Exception as e:
+            except Exception:
                 traceback.print_exc()
                 await send_json_msg({
                     "type": "error",
-                    "message": f"Erro interno: {e}"
+                    "message": "Erro interno. Tente novamente."
                 })
 
             finally:
@@ -348,11 +398,11 @@ async def websocket_endpoint(ws: WebSocket):
                         perf_msg["ttfa"] = round(metrics["tts_first"] - t0, 1)
                     await send_json_msg(perf_msg)
 
-            except Exception as e:
+            except Exception:
                 traceback.print_exc()
                 await send_json_msg({
                     "type": "error",
-                    "message": f"Erro interno: {e}"
+                    "message": "Erro interno. Tente novamente."
                 })
 
             finally:
@@ -372,9 +422,14 @@ async def websocket_endpoint(ws: WebSocket):
             if "bytes" in message:
                 if not processing:
                     audio_buffer.extend(message["bytes"])
+                    if len(audio_buffer) > AUDIO_BUFFER_MAX:
+                        print(f"[WARN] Audio buffer excedeu {AUDIO_BUFFER_MAX // (1024*1024)}MB — descartando")
+                        audio_buffer.clear()
                 elif cancel_event.is_set():
                     # Acumula pra possivel novo turno apos interrupt
                     audio_buffer.extend(message["bytes"])
+                    if len(audio_buffer) > AUDIO_BUFFER_MAX:
+                        audio_buffer.clear()
 
             elif "text" in message:
                 data = json.loads(message["text"])
@@ -410,6 +465,12 @@ async def websocket_endpoint(ws: WebSocket):
                         audio_buffer.clear()
                         continue
 
+                    now = time.time()
+                    if now - _last_speech_time < _SPEECH_COOLDOWN:
+                        audio_buffer.clear()
+                        continue
+                    _last_speech_time = now
+
                     if processing_lock.locked():
                         # Já processando — guardar áudio pra depois
                         pending_audio.extend(audio_buffer)
@@ -430,7 +491,15 @@ async def websocket_endpoint(ws: WebSocket):
                         await send_status("listening")
 
                 elif data["type"] == "text_input":
-                    user_text = data.get("text", "").strip()
+                    user_text = data.get("text", "")[:2000].strip()
+                    now = time.time()
+                    if now - _last_text_time < _TEXT_COOLDOWN:
+                        await send_json_msg({
+                            "type": "error",
+                            "message": "Aguarde antes de enviar outra mensagem."
+                        })
+                        continue
+                    _last_text_time = now
                     if user_text and not processing:
                         process_task = asyncio.create_task(process_text(user_text))
 
@@ -479,7 +548,12 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7860"))
     print(f"\n{'='*50}")
     print(f"  OpenClaw Voice Assistant — WebSocket S2S")
-    print(f"  http://{host}:{port}")
+    if _auth_required:
+        print(f"  🔒 Auth: token (não-localhost)")
+        print(f"  🔗 http://{host}:{port}?token={_auth_token}")
+    else:
+        print(f"  🔓 Auth: nenhuma (localhost)")
+        print(f"  🔗 http://{host}:{port}")
     print(f"  Modelo: {MODEL}")
     print(f"  Whisper: {WHISPER_MODEL_SIZE}")
     print(f"{'='*50}\n")

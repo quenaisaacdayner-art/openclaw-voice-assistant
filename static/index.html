@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenClaw Voice Assistant</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="/static/marked.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -491,7 +491,9 @@ body {
 
 <script>
 // ─── Config ──────────────────────────────────────────
-const WS_URL = `ws://${window.location.host}/ws`;
+const _params = new URLSearchParams(window.location.search);
+const _token = _params.get('token') || '';
+const WS_URL = `ws://${window.location.host}/ws${_token ? '?token=' + encodeURIComponent(_token) : ''}`;
 const SAMPLE_RATE = 16000;
 const VAD_THRESHOLD = 0.01;
 const SPEECH_MIN_MS = 200;
@@ -558,11 +560,20 @@ let hasConnectedBefore = false;
 const SESSION_WARN_MESSAGES = 30;
 let sessionWarningShown = false;
 
-// Marked.js config
+// Marked.js config — sanitizar HTML pra prevenir XSS
 if (typeof marked !== 'undefined') {
+    const renderer = new marked.Renderer();
+    const _origHtml = renderer.html.bind(renderer);
+    renderer.html = function(text) {
+        const input = typeof text === 'object' ? text.text || text.raw || '' : text;
+        const d = document.createElement('div');
+        d.textContent = input;
+        return d.innerHTML;
+    };
     marked.setOptions({
         breaks: true,
         gfm: true,
+        renderer: renderer,
     });
 }
 
@@ -698,8 +709,17 @@ function connect() {
         startKeepAlive();
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
         stopKeepAlive();
+
+        // Auth falhou — não reconectar
+        if (event.code === 4003) {
+            setStatus('disconnected', 'Não autorizado');
+            bottomStatus.textContent = 'Token inválido. Verifique a URL.';
+            showError('🔒 Acesso negado. Use a URL completa com token do terminal.');
+            return;
+        }
+
         setStatus('disconnected', 'Desconectado');
         reconnectAttempts++;
         reconnectDelay = Math.min(RECONNECT_MIN * Math.pow(RECONNECT_FACTOR, reconnectAttempts - 1), RECONNECT_MAX);

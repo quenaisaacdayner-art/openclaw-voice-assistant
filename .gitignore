@@ -48,5 +48,8 @@ realtimesst.log
 # Environment
 .env
 
+# Auth token (auto-gerado)
+.ova_token
+
 # Arquivo morto (código antigo movido pra cá)
 arquivo/
