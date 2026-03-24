@@ -55,8 +55,10 @@ prompts/
 2. **S2** ✅ Pipeline de Áudio (3 features)
 3. **S3** ✅ Latência (4 otimizações)
 4. **S4** ✅ Transporte & Conexão (backoff, keepalive, session persistence)
-5. **S5** ← PRÓXIMO (robustez: markdown TTS, timeout LLM, race condition, cleanup, aviso sessão longa)
-6. S6-S8: a definir, ver ROADMAP.md
+5. **S5** ✅ Robustez (markdown TTS, timeout LLM, race condition, cleanup, aviso sessão)
+6. **S6** ← PRÓXIMO (deploy: setup Windows, CI, README, limpeza)
+7. S7: Segurança (ver ROADMAP.md)
+8. S8: Conversação (ver ROADMAP.md)
 
 ## Regras
 
