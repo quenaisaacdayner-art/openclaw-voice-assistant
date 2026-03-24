@@ -40,3 +40,13 @@ Thumbs.db
 # Diagnostics
 diagnostico.py
 realtimesst.log
+
+# Screenshots soltos (devem ir em docs/ se necessário)
+*.png
+!docs/*.png
+
+# Environment
+.env
+
+# Arquivo morto (código antigo movido pra cá)
+arquivo/

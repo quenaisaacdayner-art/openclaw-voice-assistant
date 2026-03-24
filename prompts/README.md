@@ -56,7 +56,7 @@ prompts/
 3. **S3** ✅ Latência (4 otimizações)
 4. **S4** ✅ Transporte & Conexão (backoff, keepalive, session persistence)
 5. **S5** ✅ Robustez (markdown TTS, timeout LLM, race condition, cleanup, aviso sessão)
-6. **S6** ← PRÓXIMO (deploy: setup Windows, CI, README, limpeza)
+6. **S6** ✅ Deploy & Distribuição (setup Windows, CI, README, limpeza)
 7. S7: Segurança (ver ROADMAP.md)
 8. S8: Conversação (ver ROADMAP.md)
 

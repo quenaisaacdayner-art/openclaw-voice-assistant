@@ -12,9 +12,15 @@ cd openclaw-voice-assistant
 # Crie um virtual environment (recomendado)
 python -m venv venv
 source venv/bin/activate  # Linux/macOS
-# ou: venv\Scripts\activate  # Windows
 
-# Instale dependências base
+# Windows PowerShell:
+.\setup.ps1
+# ou manualmente:
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# Instale dependências base (Linux/macOS)
 pip install -r requirements.txt
 
 # Para TTS local (Kokoro/Piper) e mic direto:

@@ -4,8 +4,7 @@ Interface de conversação **Speech-to-Speech (S2S)** conectada ao [OpenClaw](ht
 
 > Construído por alguém aprendendo a programar — documentando tudo em público. [@preneurIAquem](https://x.com/preneurIAquem)
 
-<!-- TODO: substituir por GIF de demo -->
-![Demo placeholder](https://via.placeholder.com/800x400?text=Demo+GIF+aqui)
+<!-- GIF de demo será adicionado em breve -->
 
 ## O que faz
 
@@ -35,6 +34,14 @@ bash setup.sh
 ```
 
 `setup.sh` faz tudo: detecta o OS, instala Python se necessário (Ubuntu/Debian/Fedora/macOS), cria virtualenv, instala dependências. Funciona em VPS limpa.
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git
+cd openclaw-voice-assistant
+.\setup.ps1
+```
 
 Para TTS local (Kokoro/Piper) e mic direto no server:
 
@@ -123,10 +130,13 @@ Token carregado automaticamente de `~/.openclaw/openclaw.json`.
 
 ```
 server_ws.py             ─── Servidor WebSocket S2S (principal)
-static/index.html        ─── Frontend Web Audio API
-voice_assistant_app.py   ─── Fallback Gradio (APP_MODE=gradio)
+static/index.html        ─── Frontend Web Audio API + orbe visual
+voice_assistant_app.py   ─── Fallback Gradio (legado)
 voice_assistant_cli.py   ─── CLI terminal
-core/                    ─── Módulos compartilhados
+core/                    ─── Módulos compartilhados (STT, TTS, LLM, config, history)
+setup.sh / setup.ps1     ─── Setup automático (Linux/Mac / Windows)
+scripts/                 ─── Scripts de execução (3 cenários)
+tests/                   ─── ~111 testes automatizados
 ```
 
 ## Stack
@@ -146,9 +156,15 @@ core/                    ─── Módulos compartilhados
 - [x] Escuta contínua (local + browser)
 - [x] Buffer duplo TTS
 - [x] 3 engines TTS com fallback
-- [x] **Fase 1:** Otimização de latência (modelo rápido, Whisper tiny, split agressivo)
-- [x] **Fase 2:** WebSocket + Web Audio API (S2S real, streaming bidirecional)
-- [x] **Fase 3:** Barge-in, TTS pipeline, testes, polish
+- [x] **Fase 1-3:** Latência, WebSocket S2S, Barge-in
+- [x] **S1:** Interface & Interação — Disconnect, Interrupt, Input texto, Timer, Esfera pulsante, Markdown, Config panel
+- [x] **S2:** Pipeline de Áudio — Whisper small, Seletor de vozes, Velocidade TTS
+- [x] **S3:** Latência — Keep-alive LLM, Split agressivo, VAD otimizado, Métricas TTFA
+- [x] **S4:** Transporte — Backoff exponencial, Keep-alive ping/pong, Session persistence
+- [x] **S5:** Robustez — Markdown strip TTS, Timeout LLM 120s, Race protection, Cleanup disconnect, Aviso sessão longa
+- [x] **S6:** Deploy — Setup Windows, CI GitHub Actions, Docs atualizados
+- [ ] **S7:** Segurança — HTTPS/WSS, Auth da interface
+- [ ] **S8:** Conversação — Contexto longo, Persona, Memória
 
 ## Contribuindo
 
