@@ -80,7 +80,7 @@ def test_static_index_dark_mode():
     """Verifica dark mode."""
     with open("static/index.html") as f:
         content = f.read()
-    assert "#1a1a2e" in content
+    assert "#0a0a1a" in content
 
 
 # --- Testes de logica ---
