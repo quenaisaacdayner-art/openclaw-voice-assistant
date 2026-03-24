@@ -57,7 +57,7 @@ prompts/
 4. **S4** ✅ Transporte & Conexão (backoff, keepalive, session persistence)
 5. **S5** ✅ Robustez (markdown TTS, timeout LLM, race condition, cleanup, aviso sessão)
 6. **S6** ✅ Deploy & Distribuição (setup Windows, CI, README, limpeza)
-7. S7: Segurança (ver ROADMAP.md)
+7. **S7** ← PRÓXIMO (segurança: auth token, XSS fix, rate limit, buffer limit, input validation, erros genéricos, CDN local)
 8. S8: Conversação (ver ROADMAP.md)
 
 ## Regras
