@@ -23,7 +23,7 @@ def _detect_gateway_url():
 
 
 GATEWAY_URL = _detect_gateway_url()
-MODEL = os.environ.get("OPENCLAW_MODEL", "anthropic/claude-sonnet-4-6")
+MODEL = os.environ.get("OPENCLAW_MODEL", "openclaw")
 TTS_VOICE = os.environ.get("TTS_VOICE", "pt-BR-AntonioNeural")
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "piper")  # "piper", "edge" ou "kokoro"
