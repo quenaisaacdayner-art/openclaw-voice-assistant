@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-ova",
+  "name": "ova",
   "version": "0.1.0",
   "description": "Speech-to-Speech voice interface for OpenClaw — talk to your agent",
   "type": "module",
