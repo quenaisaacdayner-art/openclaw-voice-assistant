@@ -1,0 +1,19 @@
+{
+  "name": "openclaw-voice-assistant",
+  "version": "0.1.0",
+  "description": "Speech-to-Speech voice interface for OpenClaw — talk to your agent",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dayner",
+  "keywords": ["openclaw", "voice", "speech-to-speech", "whisper", "tts"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quenaisaacdayner-art/openclaw-voice-assistant"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "devDependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  }
+}

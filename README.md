@@ -25,6 +25,29 @@ O **OpenClaw** é o cérebro — seu agente com memória, skills e contexto. Est
 - **CLI** — Modo terminal pra quem prefere
 - **Mobile-friendly** — Layout responsivo, dark mode
 
+## Uso como plugin OpenClaw
+
+Se você já usa [OpenClaw](https://github.com/openclaw/openclaw), instale como plugin:
+
+```bash
+openclaw plugins install openclaw-voice-assistant
+```
+
+Depois, em qualquer canal (Telegram, webchat, Discord):
+
+```
+/ova
+```
+
+O assistente inicia e você recebe um link para abrir no browser. O setup do Python e dependências é automático na primeira execução.
+
+Para parar: `/ova stop`
+Para status: `/ova status`
+
+**Requisitos:** Python 3.10+ instalado na máquina onde o OpenClaw roda.
+
+> O projeto continua funcionando standalone (sem OpenClaw) via `run.sh` / `run.ps1` / `ova`.
+
 ## Início rápido
 
 ```bash

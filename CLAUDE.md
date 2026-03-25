@@ -22,6 +22,9 @@ static/index.html        ─ Frontend completo (HTML + CSS + JS inline, 39KB)
 static/marked.min.js     ─ marked v15 (local, não CDN)
 voice_assistant_cli.py   ─ CLI terminal (alternativa ao browser)
 pyproject.toml           ─ Configuração do pacote Python (pip install, entry point `ova`)
+package.json             ─ Manifesto npm (plugin OpenClaw)
+openclaw.plugin.json     ─ Manifesto do plugin OpenClaw (config schema)
+index.ts                 ─ Entry point do plugin (registra /ova, gerencia processo Python)
 
 core/
   __init__.py            ─ Marca core/ como pacote Python
@@ -102,6 +105,14 @@ core/history.py           ─ Sem dependências internas
 core/llm.py               ─ core/config.py (GATEWAY_URL, MODEL, load_token)
 core/stt.py               ─ core/config.py (WHISPER_MODEL_SIZE)
 core/tts.py               ─ Sem dependências internas (só libs externas)
+
+index.ts (Plugin OpenClaw)
+  ├── package.json           (metadados npm + openclaw.extensions)
+  ├── openclaw.plugin.json   (config schema + plugin id)
+  ├── setup.ps1 / setup.sh   (setup automático do Python, chamado se venv não existe)
+  ├── core/__main__.py        (entry point `ova`, chamado via spawn)
+  ├── .ova_token              (lido para incluir na URL, gerado pelo server_ws.py)
+  └── venv/                   (verificado antes de iniciar, criado pelo setup se ausente)
 ```
 
 ## Partes frágeis (entender antes de mexer)

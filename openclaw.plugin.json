@@ -1,0 +1,41 @@
+{
+  "id": "ova",
+  "name": "OpenClaw Voice Assistant",
+  "description": "Speech-to-Speech voice interface — talk to your agent with Whisper STT + streaming TTS",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "port": {
+        "type": "number",
+        "description": "Port for the voice assistant server (default: 7860)"
+      },
+      "host": {
+        "type": "string",
+        "description": "Host to bind (default: 0.0.0.0 for remote access, 127.0.0.1 for local only)"
+      },
+      "whisperModel": {
+        "type": "string",
+        "enum": ["tiny", "small"],
+        "description": "Whisper model size (tiny = fast, small = accurate)"
+      },
+      "ttsEngine": {
+        "type": "string",
+        "enum": ["edge", "piper", "kokoro"],
+        "description": "TTS engine"
+      },
+      "pythonCommand": {
+        "type": "string",
+        "description": "Python executable (default: auto-detect python3/python)"
+      }
+    }
+  },
+  "uiHints": {
+    "port": { "label": "Port", "placeholder": "7860" },
+    "host": { "label": "Host", "placeholder": "0.0.0.0" },
+    "whisperModel": { "label": "Whisper Model" },
+    "ttsEngine": { "label": "TTS Engine" },
+    "pythonCommand": { "label": "Python Command", "advanced": true }
+  }
+}

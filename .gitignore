@@ -53,3 +53,15 @@ realtimesst.log
 
 # Arquivo morto (código antigo movido pra cá)
 arquivo/
+
+# Prompts de desenvolvimento (internos)
+prompts/
+
+# Redesign prompt (interno)
+REDESIGN_PROMPT.md
+
+# Claude Code local settings
+.claude/
+
+# Node modules (se instalados pra dev)
+node_modules/
