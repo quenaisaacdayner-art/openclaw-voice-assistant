@@ -1,5 +1,4 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { Type } from "@sinclair/typebox";
 import { spawn, ChildProcess, execFile } from "child_process";
 import { readFile, access } from "fs/promises";
 import { join } from "path";
@@ -135,49 +134,49 @@ export default definePluginEntry({
     api.registerCommand({
       name: "ova",
       description: "Voice Assistant — talk to your agent with speech",
-      args: Type.Optional(Type.String()),
-      async handler(rawArgs) {
-        const subcommand = (rawArgs || "start").trim().toLowerCase();
+      acceptsArgs: true,
+      async handler(ctx) {
+        const subcommand = (ctx.args || "start").trim().toLowerCase();
 
         // ── STATUS ──────────────────────────────────────────────────────
         if (subcommand === "status") {
           if (!childProc || childProc.killed) {
-            return "Voice assistant is not running.";
+            return { text: "Voice assistant is not running." };
           }
           const uptime = Math.round((Date.now() - (startedAt || 0)) / 1000);
           const mins = Math.floor(uptime / 60);
           const secs = uptime % 60;
-          return [
+          return { text: [
             `Voice Assistant running`,
             `  Port: ${activePort}`,
             `  Host: ${activeHost}`,
             `  PID:  ${childProc.pid}`,
             `  Uptime: ${mins}m ${secs}s`,
-          ].join("\n");
+          ].join("\n") };
         }
 
         // ── STOP ────────────────────────────────────────────────────────
         if (subcommand === "stop") {
           if (!childProc || childProc.killed) {
-            return "Voice assistant is not running.";
+            return { text: "Voice assistant is not running." };
           }
           await killProcess(childProc);
           childProc = null;
           startedAt = null;
           activePort = null;
           activeHost = null;
-          return "Voice assistant stopped.";
+          return { text: "Voice assistant stopped." };
         }
 
         // ── START ───────────────────────────────────────────────────────
         if (subcommand !== "start") {
-          return `Unknown subcommand: ${subcommand}. Use: /ova [start|stop|status]`;
+          return { text: `Unknown subcommand: ${subcommand}. Use: /ova [start|stop|status]` };
         }
 
         // Already running?
         if (childProc && !childProc.killed) {
           const displayHost = activeHost === "0.0.0.0" ? getLocalIp() : activeHost;
-          return `Voice assistant already running at http://${displayHost}:${activePort}`;
+          return { text: `Voice assistant already running at http://${displayHost}:${activePort}` };
         }
 
         const config = api.pluginConfig || {};
@@ -190,7 +189,7 @@ export default definePluginEntry({
           pythonCmd = await detectPython(config.pythonCommand);
           logger.info(`[OVA] Python found: ${pythonCmd}`);
         } catch (err: any) {
-          return err.message;
+          return { text: err.message };
         }
 
         // 2. Check venv, run setup if needed
@@ -223,7 +222,7 @@ export default definePluginEntry({
             });
             logger.info("[OVA] Setup completed");
           } catch (err: any) {
-            return `Setup failed: ${err.message}`;
+            return { text: `Setup failed: ${err.message}` };
           }
         }
 
@@ -287,7 +286,7 @@ export default definePluginEntry({
           await killProcess(proc);
           childProc = null;
           startedAt = null;
-          return "Voice assistant failed to start (timeout after 30s). Check logs.";
+          return { text: "Voice assistant failed to start (timeout after 30s). Check logs." };
         }
 
         // 8. Read auth token and build URL
@@ -311,14 +310,14 @@ export default definePluginEntry({
         }
 
         // 9. Return message
-        return [
+        return { text: [
           "\uD83C\uDF99\uFE0F Voice Assistant active",
           "",
           `\uD83D\uDD17 ${url}`,
           "",
           "Open the link in your browser to talk.",
           "To stop: /ova stop",
-        ].join("\n");
+        ].join("\n") };
       },
     });
   },
