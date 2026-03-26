@@ -9,15 +9,13 @@ build/
 .pytest_cache/
 
 # Audio files
-resposta.mp3
 *.wav
 *.mp3
-diagnostico_*.wav
 
 # Whisper models (downloaded on first run)
 whisper_models/
 
-# Piper models (downloaded on first run)
+# Piper/TTS models (downloaded on first run)
 models/*.onnx
 models/*.onnx.json
 
@@ -26,45 +24,33 @@ venv/
 .venv/
 env/
 
-# IDE
+# IDE / Editor
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# GSD (development only)
-.gsd/
-
-# Diagnostics
-diagnostico.py
-realtimesst.log
-
-# Screenshots soltos (devem ir em docs/ se necessário)
-*.png
-!docs/*.png
-
 # Environment
 .env
 
-# Auth token (auto-gerado)
+# Auth token (auto-generated at runtime)
 .ova_token
 
-# Arquivo morto (código antigo movido pra cá)
+# Arquivo morto (historical — prompts, audits, old scripts)
 arquivo/
 
-# Prompts de desenvolvimento (internos)
-prompts/
-
-# Redesign prompt (interno)
-REDESIGN_PROMPT.md
-
-# Claude Code local settings
-.claude/
-
-# Node modules (se instalados pra dev)
+# Node modules
 node_modules/
 
-# cloudflared binary (auto-downloaded)
+# cloudflared binary (auto-downloaded by plugin)
 bin/
+
+# Screenshots
+*.png
+!docs/*.png
+
+# GSD (development only)
+.gsd/
