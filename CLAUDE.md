@@ -21,6 +21,8 @@ Usuário fala → Whisper transcreve → OpenClaw responde → TTS gera áudio �
 index.ts                 ─ Plugin OpenClaw (TypeScript). Registra /ova, gerencia processo Python + tunnel
 package.json             ─ Metadata npm + peerDependencies (openclaw SDK)
 openclaw.plugin.json     ─ Manifesto do plugin (config schema, id, display name)
+setup.sh                 ─ Auto-setup Linux/Mac (called by index.ts if no venv)
+setup.ps1                ─ Auto-setup Windows (called by index.ts if no venv)
 
 core/                    ─ Servidor Python (FastAPI + WebSocket)
   __init__.py            ─ Package marker
