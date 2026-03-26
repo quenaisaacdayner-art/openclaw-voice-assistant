@@ -17,12 +17,23 @@ Plugin [OpenClaw](https://github.com/openclaw/openclaw) que adiciona conversaç�
 
 ### Como plugin OpenClaw (recomendado)
 
+**Linux / macOS (bash/zsh):**
+
 ```bash
-# Clone na pasta de extensões do OpenClaw
 git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git ~/.openclaw/extensions/ova
 cd ~/.openclaw/extensions/ova
 npm install
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/quenaisaacdayner-art/openclaw-voice-assistant.git "$HOME\.openclaw\extensions\ova"
+cd "$HOME\.openclaw\extensions\ova"
+npm install
+```
+
+> ⚠️ No PowerShell, use `$HOME` em vez de `~` para paths passados a executáveis externos (git, npm). O `~` só é expandido por cmdlets nativos do PowerShell.
 
 Reinicie o OpenClaw. O plugin carrega automaticamente.
 
