@@ -355,8 +355,10 @@ export default definePluginEntry({
           ? join(pluginDir, "venv", "Scripts")
           : join(pluginDir, "venv", "bin");
 
+        let freshSetup = false;
         if (!(await pathExists(venvCheck))) {
           logger.info("[OVA] venv not found — running setup...");
+          freshSetup = true;
           try {
             await new Promise<void>((resolve, reject) => {
               const setupCmd = isWindows
@@ -444,13 +446,15 @@ export default definePluginEntry({
         activeHost = host;
 
         // 7. Wait for server to be ready
+        // First run: Whisper model download + load can take 60-120s
+        const serverTimeout = freshSetup ? 120000 : 30000;
         try {
-          await waitForServer(host, port);
+          await waitForServer(host, port, serverTimeout);
         } catch {
           await killProcess(proc);
           childProc = null;
           startedAt = null;
-          return { text: "Voice assistant failed to start (timeout after 30s). Check logs." };
+          return { text: `Voice assistant failed to start (timeout after ${serverTimeout / 1000}s). Check logs.` };
         }
 
         // 8. Read auth token and build URL
