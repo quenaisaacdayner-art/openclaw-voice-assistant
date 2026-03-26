@@ -65,3 +65,6 @@ REDESIGN_PROMPT.md
 
 # Node modules (se instalados pra dev)
 node_modules/
+
+# cloudflared binary (auto-downloaded)
+bin/

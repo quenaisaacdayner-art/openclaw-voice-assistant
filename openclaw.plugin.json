@@ -28,6 +28,10 @@
       "pythonCommand": {
         "type": "string",
         "description": "Python executable (default: auto-detect python3/python)"
+      },
+      "tunnel": {
+        "type": "boolean",
+        "description": "HTTPS tunnel via Cloudflare (auto when host is not localhost, set false to disable)"
       }
     }
   },
@@ -36,6 +40,7 @@
     "host": { "label": "Host", "placeholder": "0.0.0.0" },
     "whisperModel": { "label": "Whisper Model" },
     "ttsEngine": { "label": "TTS Engine" },
-    "pythonCommand": { "label": "Python Command", "advanced": true }
+    "pythonCommand": { "label": "Python Command", "advanced": true },
+    "tunnel": { "label": "HTTPS Tunnel", "advanced": true }
   }
 }

@@ -1,6 +1,6 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { spawn, ChildProcess, execFile } from "child_process";
-import { readFile, access } from "fs/promises";
+import { readFile, writeFile, access, mkdir, chmod, unlink } from "fs/promises";
 import { join } from "path";
 import { networkInterfaces } from "os";
 
@@ -10,6 +10,8 @@ let childProc: ChildProcess | null = null;
 let startedAt: number | null = null;
 let activePort: number | null = null;
 let activeHost: string | null = null;
+let tunnelProc: ChildProcess | null = null;
+let tunnelUrl: string | null = null;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -109,6 +111,151 @@ function killProcess(proc: ChildProcess): Promise<void> {
   });
 }
 
+async function findCloudflared(pluginDir: string): Promise<string | null> {
+  // 1. Check PATH
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile("cloudflared", ["version"], { timeout: 5000 }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    return "cloudflared";
+  } catch {
+    // not in PATH
+  }
+
+  // 2. Check pluginDir/bin/
+  const localName = isWindows ? "cloudflared.exe" : "cloudflared";
+  const localPath = join(pluginDir, "bin", localName);
+  if (await pathExists(localPath)) {
+    return localPath;
+  }
+
+  return null;
+}
+
+async function downloadCloudflared(
+  pluginDir: string,
+  logger: { info: (msg: string) => void; error: (msg: string) => void }
+): Promise<string> {
+  const binDir = join(pluginDir, "bin");
+  await mkdir(binDir, { recursive: true });
+
+  // Map platform + arch to cloudflared binary name
+  const platform = process.platform;  // win32, darwin, linux
+  const nodeArch = process.arch;      // x64, arm64, ia32, arm
+  const cfArch = nodeArch === "arm64" ? "arm64" : "amd64";
+
+  let filename: string;
+  let targetName: string;
+
+  if (platform === "win32") {
+    filename = "cloudflared-windows-amd64.exe";  // Windows ARM64 uses amd64 via emulation
+    targetName = "cloudflared.exe";
+  } else if (platform === "darwin") {
+    filename = `cloudflared-darwin-${cfArch}.tgz`;
+    targetName = "cloudflared";
+  } else {
+    filename = `cloudflared-linux-${cfArch}`;
+    targetName = "cloudflared";
+  }
+
+  const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/${filename}`;
+  const targetPath = join(binDir, targetName);
+
+  logger.info(`[OVA] Downloading cloudflared...`);
+
+  const resp = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!resp.ok) {
+    throw new Error(`Failed to download cloudflared: HTTP ${resp.status}`);
+  }
+
+  const buffer = Buffer.from(await resp.arrayBuffer());
+
+  if (platform === "darwin") {
+    // macOS: download is .tgz — extract then cleanup
+    const tgzPath = join(binDir, filename);
+    await writeFile(tgzPath, buffer);
+    await new Promise<void>((resolve, reject) => {
+      execFile("tar", ["xzf", tgzPath, "-C", binDir], (err) => {
+        if (err) reject(new Error(`Failed to extract cloudflared: ${err.message}`));
+        else resolve();
+      });
+    });
+    try { await unlink(tgzPath); } catch {}
+  } else {
+    await writeFile(targetPath, buffer);
+  }
+
+  // Make executable on Unix
+  if (platform !== "win32") {
+    await chmod(targetPath, 0o755);
+  }
+
+  logger.info(`[OVA] cloudflared downloaded to ${targetPath}`);
+  return targetPath;
+}
+
+async function startTunnel(
+  port: number,
+  cfPath: string,
+  logger: { info: (msg: string) => void; error: (msg: string) => void }
+): Promise<{ proc: ChildProcess; url: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cfPath, ["tunnel", "--url", `http://localhost:${port}`], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        proc.kill();
+        reject(new Error("Tunnel did not produce URL within 30s"));
+      }
+    }, 30000);
+
+    const urlRegex = /https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/;
+
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      logger.info(`[OVA:tunnel] ${text.trimEnd()}`);
+      if (!settled) {
+        const match = text.match(urlRegex);
+        if (match) {
+          settled = true;
+          clearTimeout(timer);
+          resolve({ proc, url: match[0] });
+        }
+      }
+    });
+
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      logger.info(`[OVA:tunnel] ${chunk.toString().trimEnd()}`);
+    });
+
+    proc.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    proc.on("exit", (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`cloudflared exited (code ${code}) before tunnel was ready`));
+      }
+    });
+  });
+}
+
 // ─── Plugin Entry ───────────────────────────────────────────────────────────
 
 export default definePluginEntry({
@@ -121,6 +268,11 @@ export default definePluginEntry({
 
     // Cleanup on gateway shutdown
     api.on("shutdown", async () => {
+      if (tunnelProc) {
+        await killProcess(tunnelProc);
+        tunnelProc = null;
+        tunnelUrl = null;
+      }
       if (childProc) {
         logger.info("[OVA] Gateway shutting down — stopping voice assistant");
         await killProcess(childProc);
@@ -152,6 +304,7 @@ export default definePluginEntry({
             `  Host: ${activeHost}`,
             `  PID:  ${childProc.pid}`,
             `  Uptime: ${mins}m ${secs}s`,
+            ...(tunnelUrl ? [`  Tunnel: ${tunnelUrl}`] : []),
           ].join("\n") };
         }
 
@@ -159,6 +312,11 @@ export default definePluginEntry({
         if (subcommand === "stop") {
           if (!childProc || childProc.killed) {
             return { text: "Voice assistant is not running." };
+          }
+          if (tunnelProc) {
+            await killProcess(tunnelProc);
+            tunnelProc = null;
+            tunnelUrl = null;
           }
           await killProcess(childProc);
           childProc = null;
@@ -175,8 +333,8 @@ export default definePluginEntry({
 
         // Already running?
         if (childProc && !childProc.killed) {
-          const displayHost = activeHost === "0.0.0.0" ? getLocalIp() : activeHost;
-          return { text: `Voice assistant already running at http://${displayHost}:${activePort}` };
+          const displayUrl = tunnelUrl || `http://${activeHost === "0.0.0.0" ? getLocalIp() : activeHost}:${activePort}`;
+          return { text: `Voice assistant already running at ${displayUrl}` };
         }
 
         const config = api.pluginConfig || {};
@@ -268,6 +426,12 @@ export default definePluginEntry({
             startedAt = null;
             activePort = null;
             activeHost = null;
+            // Kill tunnel if server dies (no point keeping it alive)
+            if (tunnelProc) {
+              killProcess(tunnelProc);
+              tunnelProc = null;
+              tunnelUrl = null;
+            }
           }
         });
         proc.on("error", (err) => {
@@ -290,34 +454,72 @@ export default definePluginEntry({
         }
 
         // 8. Read auth token and build URL
-        let url: string;
         const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+        let url: string;
+        let tunnelActive = false;
 
         if (isLoopback) {
           url = `http://localhost:${port}`;
         } else {
-          // Remote — read .ova_token
+          // Non-loopback — read auth token
           let token = "";
           try {
             token = (await readFile(join(pluginDir, ".ova_token"), "utf-8")).trim();
           } catch {
             logger.error("[OVA] Could not read .ova_token");
           }
-          const displayHost = host === "0.0.0.0" ? getLocalIp() : host;
-          url = token
-            ? `http://${displayHost}:${port}?token=${token}`
-            : `http://${displayHost}:${port}`;
+
+          // 9. Start HTTPS tunnel (unless disabled via config)
+          if (config.tunnel !== false) {
+            try {
+              let cfPath = await findCloudflared(pluginDir);
+              if (!cfPath) {
+                logger.info("[OVA] cloudflared not found — downloading...");
+                cfPath = await downloadCloudflared(pluginDir, logger);
+              }
+              const result = await startTunnel(port, cfPath, logger);
+              tunnelProc = result.proc;
+              tunnelUrl = token ? `${result.url}?token=${token}` : result.url;
+              url = tunnelUrl;
+              tunnelActive = true;
+              logger.info(`[OVA] Tunnel active: ${tunnelUrl}`);
+
+              // Cleanup when tunnel process dies
+              result.proc.on("exit", (code) => {
+                logger.info(`[OVA:tunnel] Exited (code ${code})`);
+                if (tunnelProc === result.proc) {
+                  tunnelProc = null;
+                  tunnelUrl = null;
+                }
+              });
+            } catch (err: any) {
+              logger.error(`[OVA] Tunnel failed: ${err.message} — falling back to HTTP`);
+            }
+          }
+
+          // Fallback: plain HTTP (tunnel disabled or failed)
+          if (!tunnelActive) {
+            const displayHost = host === "0.0.0.0" ? getLocalIp() : host;
+            url = token
+              ? `http://${displayHost}:${port}?token=${token}`
+              : `http://${displayHost}:${port}`;
+          }
         }
 
-        // 9. Return message
-        return { text: [
+        // 10. Return message
+        const lines = [
           "\uD83C\uDF99\uFE0F Voice Assistant active",
           "",
           `\uD83D\uDD17 ${url}`,
-          "",
-          "Open the link in your browser to talk.",
-          "To stop: /ova stop",
-        ].join("\n") };
+        ];
+        if (tunnelActive) {
+          lines.push("", "\uD83D\uDD12 HTTPS tunnel active (Cloudflare)");
+        } else if (!isLoopback) {
+          lines.push("", "\u26A0\uFE0F No HTTPS tunnel \u2014 microphone won't work on remote devices.");
+        }
+        lines.push("", "Open the link in your browser to talk.", "To stop: /ova stop");
+
+        return { text: lines.join("\n") };
       },
     });
   },

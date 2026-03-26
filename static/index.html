@@ -793,7 +793,8 @@ body {
 // ─── Config ──────────────────────────────────────────
 const _params = new URLSearchParams(window.location.search);
 const _token = _params.get('token') || '';
-const WS_URL = `ws://${window.location.host}/ws${_token ? '?token=' + encodeURIComponent(_token) : ''}`;
+const _wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${_wsProto}//${window.location.host}/ws${_token ? '?token=' + encodeURIComponent(_token) : ''}`;
 const SAMPLE_RATE = 16000;
 const VAD_THRESHOLD = 0.01;
 const SPEECH_MIN_MS = 200;
