@@ -25,7 +25,7 @@ class TestDefaults:
         assert config.GATEWAY_URL.endswith("/v1/chat/completions")
 
     def test_default_model(self):
-        assert config.MODEL == "anthropic/claude-sonnet-4-6"
+        assert config.MODEL == "openclaw"
 
     def test_default_tts_voice(self):
         assert config.TTS_VOICE == "pt-BR-AntonioNeural"
