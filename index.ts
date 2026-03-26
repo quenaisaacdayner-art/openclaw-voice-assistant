@@ -326,39 +326,24 @@ export default definePluginEntry({
           return { text: "Voice assistant stopped." };
         }
 
-        // ── START ───────────────────────────────────────────────────────
-        if (subcommand !== "start") {
-          return { text: `Unknown subcommand: ${subcommand}. Use: /ova [start|stop|status]` };
-        }
+        // ── SETUP ────────────────────────────────────────────────────────
+        if (subcommand === "setup") {
+          const venvCheck = isWindows
+            ? join(pluginDir, "venv", "Scripts")
+            : join(pluginDir, "venv", "bin");
 
-        // Already running?
-        if (childProc && !childProc.killed) {
-          const displayUrl = tunnelUrl || `http://${activeHost === "0.0.0.0" ? getLocalIp() : activeHost}:${activePort}`;
-          return { text: `Voice assistant already running at ${displayUrl}` };
-        }
+          if (await pathExists(venvCheck)) {
+            return { text: "Setup already complete (venv/ exists). To reinstall, delete venv/ and run /ova setup again." };
+          }
 
-        const config = api.pluginConfig || {};
-        const host: string = config.host || "0.0.0.0";
-        const port: number = config.port || 7860;
+          let pythonCmd: string;
+          try {
+            pythonCmd = await detectPython((api.pluginConfig || {}).pythonCommand);
+          } catch (err: any) {
+            return { text: err.message };
+          }
 
-        // 1. Detect Python
-        let pythonCmd: string;
-        try {
-          pythonCmd = await detectPython(config.pythonCommand);
-          logger.info(`[OVA] Python found: ${pythonCmd}`);
-        } catch (err: any) {
-          return { text: err.message };
-        }
-
-        // 2. Check venv, run setup if needed
-        const venvCheck = isWindows
-          ? join(pluginDir, "venv", "Scripts")
-          : join(pluginDir, "venv", "bin");
-
-        let freshSetup = false;
-        if (!(await pathExists(venvCheck))) {
-          logger.info("[OVA] venv not found — running setup...");
-          freshSetup = true;
+          logger.info(`[OVA] Running setup (Python: ${pythonCmd})...`);
           try {
             await new Promise<void>((resolve, reject) => {
               const setupCmd = isWindows
@@ -381,22 +366,47 @@ export default definePluginEntry({
               setupCmd.on("error", (err) => reject(err));
             });
             logger.info("[OVA] Setup completed");
+            return { text: "✅ Setup complete. Dependencies installed. Run /ova start to launch." };
           } catch (err: any) {
             return { text: `Setup failed: ${err.message}` };
           }
         }
 
-        // 3. Determine venv Python
+        // ── START ───────────────────────────────────────────────────────
+        if (subcommand !== "start") {
+          return { text: `Unknown subcommand: ${subcommand}. Use: /ova [setup|start|stop|status]` };
+        }
+
+        // Already running?
+        if (childProc && !childProc.killed) {
+          const displayUrl = tunnelUrl || `http://${activeHost === "0.0.0.0" ? getLocalIp() : activeHost}:${activePort}`;
+          return { text: `Voice assistant already running at ${displayUrl}` };
+        }
+
+        const config = api.pluginConfig || {};
+        const host: string = config.host || "0.0.0.0";
+        const port: number = config.port || 7860;
+
+        // 1. Check venv exists (user must run /ova setup first)
+        const venvCheck = isWindows
+          ? join(pluginDir, "venv", "Scripts")
+          : join(pluginDir, "venv", "bin");
+
+        if (!(await pathExists(venvCheck))) {
+          return { text: "Dependencies not installed. Run /ova setup first, then /ova start." };
+        }
+
+        // 2. Determine venv Python
         const venvPython = isWindows
           ? join(pluginDir, "venv", "Scripts", "python.exe")
           : join(pluginDir, "venv", "bin", "python");
 
-        // 4. Build command args
+        // 3. Build command args
         const args = ["-m", "core", "--host", host, "--port", String(port), "--no-browser"];
         if (config.whisperModel) args.push("--whisper", config.whisperModel);
         if (config.ttsEngine) args.push("--tts-engine", config.ttsEngine);
 
-        // 5. Build env vars
+        // 4. Build env vars
         const gatewayPort = api.config?.gateway?.port || 18789;
         const gatewayToken = api.config?.gateway?.auth?.token;
         const env: Record<string, string> = {
@@ -407,7 +417,7 @@ export default definePluginEntry({
           env.OPENCLAW_GATEWAY_TOKEN = gatewayToken;
         }
 
-        // 6. Spawn process
+        // 5. Spawn process
         logger.info(`[OVA] Starting: ${venvPython} ${args.join(" ")}`);
         const proc = spawn(venvPython, args, {
           cwd: pluginDir,
@@ -445,19 +455,17 @@ export default definePluginEntry({
         activePort = port;
         activeHost = host;
 
-        // 7. Wait for server to be ready
-        // First run: Whisper model download + load can take 60-120s
-        const serverTimeout = freshSetup ? 120000 : 30000;
+        // 6. Wait for server to be ready
         try {
-          await waitForServer(host, port, serverTimeout);
+          await waitForServer(host, port);
         } catch {
           await killProcess(proc);
           childProc = null;
           startedAt = null;
-          return { text: `Voice assistant failed to start (timeout after ${serverTimeout / 1000}s). Check logs.` };
+          return { text: "Voice assistant failed to start (timeout after 30s). Check logs." };
         }
 
-        // 8. Read auth token and build URL
+        // 7. Read auth token and build URL
         const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
         let url: string;
         let tunnelActive = false;
@@ -473,7 +481,7 @@ export default definePluginEntry({
             logger.error("[OVA] Could not read .ova_token");
           }
 
-          // 9. Start HTTPS tunnel (unless disabled via config)
+          // 8. Start HTTPS tunnel (unless disabled via config)
           if (config.tunnel !== false) {
             try {
               let cfPath = await findCloudflared(pluginDir);
@@ -510,7 +518,7 @@ export default definePluginEntry({
           }
         }
 
-        // 10. Return message
+        // 9. Return message
         const lines = [
           "\uD83C\uDF99\uFE0F Voice Assistant active",
           "",
