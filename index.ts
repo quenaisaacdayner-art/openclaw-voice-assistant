@@ -71,19 +71,56 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-async function waitForServer(host: string, port: number, timeoutMs = 30000): Promise<void> {
+async function waitForServer(
+  host: string,
+  port: number,
+  proc: ChildProcess,
+  stderrChunks: string[],
+  timeoutMs = 30000,
+): Promise<void> {
   const url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (resp.ok || resp.status === 403) return; // server is up (403 = auth required)
-    } catch {
-      // not ready yet
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`Server did not start within ${timeoutMs / 1000}s`);
+
+  // Race: server ready vs process died vs timeout
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const onExit = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poller);
+      const stderr = stderrChunks.join("").trim();
+      const detail = stderr ? `:\n${stderr}` : "";
+      reject(new Error(`Python process exited (code ${code}) before server was ready${detail}`));
+    };
+
+    proc.once("exit", onExit);
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poller);
+      proc.removeListener("exit", onExit);
+      reject(new Error(`Server did not start within ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+
+    const poller = setInterval(async () => {
+      if (settled) return;
+      try {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
+        if (resp.ok || resp.status === 403) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          clearInterval(poller);
+          proc.removeListener("exit", onExit);
+          resolve();
+        }
+      } catch {
+        // not ready yet
+      }
+    }, 500);
+  });
 }
 
 function killProcess(proc: ChildProcess): Promise<void> {
@@ -419,6 +456,7 @@ export default definePluginEntry({
 
         // 5. Spawn process
         logger.info(`[OVA] Starting: ${venvPython} ${args.join(" ")}`);
+        const stderrChunks: string[] = [];
         const proc = spawn(venvPython, args, {
           cwd: pluginDir,
           stdio: ["ignore", "pipe", "pipe"],
@@ -429,7 +467,9 @@ export default definePluginEntry({
           logger.info(`[OVA] ${data.toString().trimEnd()}`);
         });
         proc.stderr?.on("data", (data) => {
-          logger.error(`[OVA] ${data.toString().trimEnd()}`);
+          const text = data.toString();
+          stderrChunks.push(text);
+          logger.error(`[OVA] ${text.trimEnd()}`);
         });
         proc.on("exit", (code) => {
           logger.info(`[OVA] Process exited with code ${code}`);
@@ -457,12 +497,12 @@ export default definePluginEntry({
 
         // 6. Wait for server to be ready
         try {
-          await waitForServer(host, port);
-        } catch {
+          await waitForServer(host, port, proc, stderrChunks);
+        } catch (err: any) {
           await killProcess(proc);
           childProc = null;
           startedAt = null;
-          return { text: "Voice assistant failed to start (timeout after 30s). Check logs." };
+          return { text: `Voice assistant failed to start. ${err.message}` };
         }
 
         // 7. Read auth token and build URL

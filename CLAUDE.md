@@ -23,8 +23,9 @@ package.json             ─ Metadata npm + peerDependencies (openclaw SDK)
 openclaw.plugin.json     ─ Manifesto do plugin (config schema, id, display name)
 setup.sh                 ─ Auto-setup Linux/Mac (called by index.ts if no venv)
 setup.ps1                ─ Auto-setup Windows (called by index.ts if no venv)
+server_ws.py             ─ App FastAPI principal (rotas HTTP + WebSocket S2S)
 
-core/                    ─ Servidor Python (FastAPI + WebSocket)
+core/                    ─ Módulos Python auxiliares
   __init__.py            ─ Package marker
   __main__.py            ─ Entry point: `python -m core` (argparse + uvicorn)
   config.py              ─ Constantes + env vars + load_token()
@@ -67,12 +68,18 @@ index.ts (Plugin)
 
 core/__main__.py
   ├── core/config.py
-  └── server_ws.py → NÃO EXISTE MAIS. O servidor é core/ inteiro via FastAPI.
-      (uvicorn carrega core como app)
+  └── server_ws.py  (app FastAPI principal — importado via importlib, rodado pelo uvicorn)
 
-core/llm.py   ← core/config.py (GATEWAY_URL, MODEL, load_token)
+server_ws.py
+  ├── core/config.py  (load_token, GATEWAY_URL, MODEL, WHISPER_MODEL_SIZE)
+  ├── core/stt.py     (transcribe_audio, init_stt, get_current_model, set_whisper_model)
+  ├── core/tts.py     (init_tts, warmup_tts, generate_tts, get_engine, get_tts_info, etc.)
+  ├── core/llm.py     (ask_openclaw_stream, ask_openclaw, _find_sentence_end, _session)
+  └── core/history.py (build_api_history, MAX_HISTORY)
+
+core/llm.py   ← core/config.py (GATEWAY_URL, MODEL)
 core/stt.py   ← core/config.py (WHISPER_MODEL_SIZE)
-core/tts.py   ← sem deps internas (só libs externas)
+core/tts.py   ← core/config.py (TTS_ENGINE, TTS_VOICE, PIPER_MODEL, PROJECT_DIR)
 ```
 
 ## Partes frágeis
